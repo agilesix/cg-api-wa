@@ -4,25 +4,18 @@ A [CommonGrants](https://commongrants.org)-compliant HTTP API that surfaces [Was
 
 This project is both a **proof of concept** that demonstrates how a state grants portal can expose its data via the CommonGrants protocol, and a **reference template** for building CommonGrants API proxies against any source system. It is a sibling of the [Pennsylvania API](https://github.com/agilesix/cg-api-pa) and the [California API](https://github.com/agilesix/cg-api-ca) and shares their architecture; only the `src/adapter/` layer differs.
 
-> ### 🚧 Port status
+> ### ✅ Adapter status
 >
-> This repo was forked from `cg-api-ca` and the scaffolding — package name, Worker/D1/R2 resource names, env vars, symbol names, docs, and CI/CD — has been renamed for Washington.
->
-> **`src/adapter/` has not been ported yet.** It still contains California's CKAN
-> implementation behind WA-named symbols (`WaSourceClient`, `WaPlugin`, `WaGrant`,
-> `waGrantToOpportunity`), and the custom-field keys are still `ca*`-prefixed. The
-> field definitions and transform logic were deliberately left untouched so the
-> adapter port is a self-contained piece of work. Until that lands, a live sync
-> against FundHub will fail — everything else (routes, storage, ETL, docs, deploys)
-> works.
->
-> See [Porting the adapter](#porting-the-adapter) for what needs to change.
+> `src/adapter/` reads FundHubWA's public WordPress REST API, filters the feed to
+> Washington-state opportunities, resolves its taxonomy labels, and maps records
+> into CommonGrants. Federal records in FundHub are intentionally excluded to
+> avoid duplicating the federal CommonGrants source.
 
 ## Overview
 
 The API fetches funding opportunity data from [Washington FundHub](https://fundhub.wa.gov/), normalizes it into the CommonGrants `Opportunity` schema (plus WA-specific custom fields), and serves it via standard CommonGrants endpoints.
 
-FundHub publishes its opportunities through the WordPress REST API — `GET https://fundhub.wa.gov/wp-json/wp/v2/funding?per_page=100` — rather than the CKAN DataStore that the California sibling reads from. Adapting to that shape is the outstanding work described above.
+FundHub publishes its opportunities through the WordPress REST API — `GET https://fundhub.wa.gov/wp-json/wp/v2/funding?per_page=100`. The adapter resolves WordPress taxonomy ids to labels, promotes standard fields into the CommonGrants schema, and preserves source-specific values (including original HTML fields) as `wa*` custom fields.
 
 Data is kept fresh by a scheduled ETL that runs **every 8 hours**. Syncs are **incremental**: the ETL tracks a high-watermark of the maximum source last-modified value ingested and asks the upstream for only the changed delta, so a steady-state run fetches a handful of records instead of re-streaming the whole dataset. Records are never deleted — an opportunity removed upstream stays at its last-known state.
 
@@ -102,32 +95,22 @@ Then hit `http://localhost:8787/docs`.
 - **Auto-generated SQL types** via `kysely-codegen`. Never hand-edit `src/storage/sql/schema.ts`.
 - **No deep cross-directory imports.** Every `src/<dir>/` has an `index.ts` public surface. Lint-enforced.
 
-## Porting the adapter
+## FundHubWA adapter
 
-Everything outside `src/adapter/` is Washington-ready. To finish the port, work
-through `src/adapter/` — the module names are already WA-flavored, so this is a
-matter of replacing the bodies:
+The source-specific implementation is concentrated in `src/adapter/`:
 
-| File                | What it still does (CA)                                     | What it needs to do (WA)                                                                 |
-| ------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `waSource.ts`       | Zod schema for a CKAN row + `datastore_search` envelope     | Zod schema for a FundHub `funding` post + the WP REST list envelope                      |
-| `WaSourceClient.ts` | Builds `datastore_search?resource_id=…` URLs                | Page `wp-json/wp/v2/funding?per_page=100&page=N`; use the `X-WP-TotalPages` header       |
-| `transform.ts`      | Maps CKAN columns (`PortalID`, `LastUpdated`, …)            | Map FundHub's `id` / `modified` / ACF-style fields                                       |
-| `fields.ts`         | `WaStringListSchema` + mirrored catalog value schemas       | Keep the mirrored catalog schemas verbatim; adjust the source-specific ones              |
-| `plugin.ts`         | Declares `ca*`-prefixed custom fields                       | Rename the keys to `wa*` and re-describe them against FundHub's fields                   |
-| `index.ts`          | `getSourceId` → `PortalID`, `getModifiedAt` → `LastUpdated` | Point both at FundHub's equivalents — `getModifiedAt` must be lexicographically sortable |
+| File                | Responsibility                                                                  |
+| ------------------- | ------------------------------------------------------------------------------- |
+| `waSource.ts`       | Validates FundHub WordPress posts, ACF fields, and embedded taxonomy terms      |
+| `WaSourceClient.ts` | Paginates the public feed, supports `modified_after`, and excludes federal data |
+| `transform.ts`      | Maps native fields and preserves FundHub-specific data without silent loss      |
+| `fields.ts`         | Defines shared catalog value schemas and the WA taxonomy value shape            |
+| `plugin.ts`         | Registers the WA source schema, transforms, and `wa*` custom fields             |
+| `index.ts`          | Exposes the adapter's stable public surface and incremental-sync hooks          |
 
-Two things to keep as they are:
-
-- The mirrored catalog value schemas in `fields.ts` (`AgencyValueSchema`,
-  `ContactInfoValueSchema`, `AdditionalInfoValueSchema`, `CostSharingValueSchema`)
-  are byte-identical across the PA/CA/WA plugins on purpose. Don't drift them.
-- The unprefixed cross-source keys in `plugin.ts` (`fundingSource`,
-  `fundingInstrument`, `lastSyncedAt`).
-
-Then update the two `vars` in `wrangler.jsonc` (`WA_API_BASE_URL`,
-`WA_RESOURCE_ID`) to whatever shape the new client wants, and refresh the
-fixtures + tests under `__tests__/adapter/`, which still carry CA records.
+After deploying a transformation change, run the **Manual sync** GitHub Action
+with **Force full re-sync** enabled. This bypasses the content hash and
+watermark so cached rows are rebuilt with the current mapping.
 
 ## Forking for a different source system
 
