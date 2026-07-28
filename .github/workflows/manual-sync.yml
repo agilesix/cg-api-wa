@@ -20,7 +20,7 @@ on:
         type: boolean
         default: false
       base_url:
-        description: 'Override API base URL (defaults to vars.PRODUCTION_BASE_URL)'
+        description: 'Preview URL override. Must be this repository’s per-PR Worker under the same workers.dev account as PRODUCTION_BASE_URL.'
         type: string
         required: false
 
@@ -50,6 +50,36 @@ jobs:
             echo "::error::SYNC_SECRET secret is not set."
             exit 1
           fi
+
+          # A workflow dispatcher with repository write access must not be able
+          # to send SYNC_SECRET to an arbitrary host. Production is always
+          # trusted; a preview override must use this repository's exact
+          # per-PR Worker naming convention and the same workers.dev account
+          # suffix as PRODUCTION_BASE_URL.
+          production_url="${{ vars.PRODUCTION_BASE_URL }}"
+          if [ -z "${production_url:-}" ]; then
+            echo "::error::PRODUCTION_BASE_URL repository variable is not set."
+            exit 1
+          fi
+          node - "${production_url}" "${BASE_URL}" <<'NODE'
+          const [productionRaw, candidateRaw] = process.argv.slice(2);
+          const production = new URL(productionRaw);
+          const candidate = new URL(candidateRaw);
+          const productionHostParts = production.hostname.split(".");
+          const trustedSuffix = productionHostParts.slice(1).join(".");
+          const previewHost = new RegExp(
+            `^wa-commongrants-api-pr-\\d+\\.${trustedSuffix.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}$`,
+          );
+          const isProduction = candidate.origin === production.origin;
+          const isPreview =
+            candidate.protocol === "https:" &&
+            candidate.port === "" &&
+            previewHost.test(candidate.hostname);
+          if (!isProduction && !isPreview) {
+            console.error(`::error::Refusing to send SYNC_SECRET to untrusted URL: ${candidate.origin}`);
+            process.exit(1);
+          }
+          NODE
 
           url="${BASE_URL%/}/admin/sync"
           if [ "${FORCE}" = "true" ]; then

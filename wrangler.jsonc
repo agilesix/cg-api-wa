@@ -15,7 +15,7 @@
       "database_name": "wa-grants-commongrants",
       // Create with `pnpm run bootstrap` (or `wrangler d1 create
       // wa-grants-commongrants`) and paste the returned uuid here.
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "621e23bd-f22d-4ec5-bd27-f20399df1389",
       "migrations_dir": "src/storage/sql/migrations",
     },
   ],
