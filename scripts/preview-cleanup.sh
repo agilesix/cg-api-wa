@@ -16,9 +16,25 @@ WORKER_NAME="wa-commongrants-api-${IDENTIFIER}"
 WRANGLER="pnpm exec wrangler"
 
 echo "→ Deleting preview Worker: ${WORKER_NAME}"
-${WRANGLER} delete --name "${WORKER_NAME}" 2>&1 || echo "  Worker not found (already cleaned up)"
+if OUTPUT=$(${WRANGLER} delete --name "${WORKER_NAME}" 2>&1); then
+  echo "$OUTPUT"
+elif grep -Eqi 'not found|does not exist' <<< "$OUTPUT"; then
+  echo "  Worker not found (already cleaned up)"
+else
+  echo "$OUTPUT" >&2
+  echo "  ✗ Failed to delete preview Worker" >&2
+  exit 1
+fi
 
 echo "→ Deleting preview database: ${DB_NAME}"
-${WRANGLER} d1 delete "${DB_NAME}" 2>&1 || echo "  Database not found (already cleaned up)"
+if OUTPUT=$(${WRANGLER} d1 delete "${DB_NAME}" 2>&1); then
+  echo "$OUTPUT"
+elif grep -Eqi 'not found|does not exist' <<< "$OUTPUT"; then
+  echo "  Database not found (already cleaned up)"
+else
+  echo "$OUTPUT" >&2
+  echo "  ✗ Failed to delete preview database" >&2
+  exit 1
+fi
 
 echo "  ✓ Cleanup complete"
