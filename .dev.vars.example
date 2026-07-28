@@ -31,7 +31,8 @@ SYNC_SECRET=local-dev-secret
 # =============================================================================
 #
 # Configured in `wrangler.jsonc` (`vars` block) — non-secret, checked in:
-#   PA_API_BASE_URL  Upstream PA eGrants Beta API base URL.
+#   WA_API_BASE_URL  Upstream Washington FundHub API base URL.
+#   WA_RESOURCE_ID   The FundHub resource the client reads from.
 #   ENVIRONMENT      "preview" | "production". Set per env block in wrangler.jsonc.
 #
 # Configured in `wrangler.jsonc` (resource bindings) — provisioned by Wrangler,

@@ -1,6 +1,6 @@
 # Development
 
-Local development guide for the CA CommonGrants API.
+Local development guide for the WA CommonGrants API.
 
 ## Prerequisites
 
@@ -12,8 +12,8 @@ Local development guide for the CA CommonGrants API.
 ## Installation
 
 ```bash
-git clone <repo-url> api-ca
-cd api-ca
+git clone <repo-url> api-wa
+cd api-wa
 corepack enable        # once, if you haven't already
 pnpm install
 ```
@@ -32,9 +32,9 @@ pnpm run bootstrap          # creates D1 + R2, patches wrangler.jsonc, applies m
 `bootstrap` does the following (safe to re-run if any step fails):
 
 1. Verifies Cloudflare auth.
-2. Creates the `ca-grants-commongrants` D1 database (or reuses the existing one by name).
+2. Creates the `wa-grants-commongrants` D1 database (or reuses the existing one by name).
 3. Patches `wrangler.jsonc`'s `database_id` placeholder with the real id.
-4. Creates the `ca-grants-raw-snapshots` R2 bucket (or reuses it).
+4. Creates the `wa-grants-raw-snapshots` R2 bucket (or reuses it).
 5. Applies local D1 migrations.
 
 #### One-time R2 enablement
@@ -45,7 +45,7 @@ If you're running a tier that doesn't need raw-record archival (tier 0 proxy or 
 
 When you fork this template for a different state, edit the two `DB_NAME` / `BUCKET_NAME` constants at the top of `scripts/bootstrap.ts` (and the matching names in `wrangler.jsonc` + the `migrate` / `db:codegen` scripts in `package.json`). Then `pnpm run bootstrap` works for your fork too.
 
-Local D1 state lives under `.wrangler/state/v3/d1/ca-grants-commongrants/`. Re-regenerate SQL types after any migration:
+Local D1 state lives under `.wrangler/state/v3/d1/wa-grants-commongrants/`. Re-regenerate SQL types after any migration:
 
 ```bash
 pnpm run db:codegen
@@ -95,7 +95,7 @@ curl -X POST http://localhost:8787/common-grants/admin/sync \
   -H 'Authorization: Bearer local-dev-secret'
 ```
 
-This fetches opportunities from the California Grants Portal (CKAN DataStore), transforms them into CommonGrants format, and upserts them into local D1. Syncs are incremental: the first run is a full load, and later runs fetch only records modified since the stored watermark (a `?force=true` query param forces a full re-sync).
+This fetches opportunities from Washington FundHub, transforms them into CommonGrants format, and upserts them into local D1. (Until `src/adapter/` is ported — see the port-status note in the README — the client still issues CKAN requests and this call will fail against FundHub.) Syncs are incremental: the first run is a full load, and later runs fetch only records modified since the stored watermark (a `?force=true` query param forces a full re-sync).
 
 ## Tests
 
@@ -176,8 +176,8 @@ Required Cloudflare secrets: `CLOUDFLARE_API_TOKEN` (Workers + D1 + R2 edit), `C
 First-time CF resource creation:
 
 ```bash
-wrangler d1 create ca-grants-commongrants
+wrangler d1 create wa-grants-commongrants
 # → copy the database_id into wrangler.jsonc
 
-wrangler r2 bucket create ca-grants-raw-snapshots
+wrangler r2 bucket create wa-grants-raw-snapshots
 ```

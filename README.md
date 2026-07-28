@@ -1,14 +1,30 @@
-# CA CommonGrants API
+# WA CommonGrants API
 
-A [CommonGrants](https://commongrants.org)-compliant HTTP API that surfaces [California Grants Portal](https://data.ca.gov/dataset/california-grants-portal) data in a standard, interoperable format.
+A [CommonGrants](https://commongrants.org)-compliant HTTP API that surfaces [Washington FundHub](https://fundhub.wa.gov/) data in a standard, interoperable format.
 
-This project is both a **proof of concept** that demonstrates how a state grants portal can expose its data via the CommonGrants protocol, and a **reference template** for building CommonGrants API proxies against any source system. It is a sibling of the [Pennsylvania API](https://github.com/agilesix/cg-api-pa) and shares its architecture; only the `src/adapter/` layer differs.
+This project is both a **proof of concept** that demonstrates how a state grants portal can expose its data via the CommonGrants protocol, and a **reference template** for building CommonGrants API proxies against any source system. It is a sibling of the [Pennsylvania API](https://github.com/agilesix/cg-api-pa) and the [California API](https://github.com/agilesix/cg-api-ca) and shares their architecture; only the `src/adapter/` layer differs.
+
+> ### 🚧 Port status
+>
+> This repo was forked from `cg-api-ca` and the scaffolding — package name, Worker/D1/R2 resource names, env vars, symbol names, docs, and CI/CD — has been renamed for Washington.
+>
+> **`src/adapter/` has not been ported yet.** It still contains California's CKAN
+> implementation behind WA-named symbols (`WaSourceClient`, `WaPlugin`, `WaGrant`,
+> `waGrantToOpportunity`), and the custom-field keys are still `ca*`-prefixed. The
+> field definitions and transform logic were deliberately left untouched so the
+> adapter port is a self-contained piece of work. Until that lands, a live sync
+> against FundHub will fail — everything else (routes, storage, ETL, docs, deploys)
+> works.
+>
+> See [Porting the adapter](#porting-the-adapter) for what needs to change.
 
 ## Overview
 
-The API fetches grant opportunity data from California's open data portal (a [CKAN DataStore](https://docs.ckan.org/en/latest/maintaining/datastore.html) resource on `data.ca.gov`), normalizes it into the CommonGrants `Opportunity` schema (plus CA-specific custom fields), and serves it via standard CommonGrants endpoints.
+The API fetches funding opportunity data from [Washington FundHub](https://fundhub.wa.gov/), normalizes it into the CommonGrants `Opportunity` schema (plus WA-specific custom fields), and serves it via standard CommonGrants endpoints.
 
-Data is kept fresh by a scheduled ETL that runs **every 8 hours** (California refreshes roughly once a day). Syncs are **incremental**: the ETL tracks a high-watermark of the maximum source `LastUpdated` ingested and asks the upstream for only the changed delta, so a steady-state run fetches a handful of records instead of re-streaming the whole dataset. Records are never deleted — an opportunity removed upstream stays at its last-known state.
+FundHub publishes its opportunities through the WordPress REST API — `GET https://fundhub.wa.gov/wp-json/wp/v2/funding?per_page=100` — rather than the CKAN DataStore that the California sibling reads from. Adapting to that shape is the outstanding work described above.
+
+Data is kept fresh by a scheduled ETL that runs **every 8 hours**. Syncs are **incremental**: the ETL tracks a high-watermark of the maximum source last-modified value ingested and asks the upstream for only the changed delta, so a steady-state run fetches a handful of records instead of re-streaming the whole dataset. Records are never deleted — an opportunity removed upstream stays at its last-known state.
 
 **Default deployment:** Cloudflare Workers + D1 (SQLite) + R2 (raw snapshots). Every layer is swappable — see [PORTING.md](PORTING.md) for recipes.
 
@@ -36,14 +52,14 @@ Data is kept fresh by a scheduled ETL that runs **every 8 hours** (California re
 │    NoopSnapshotStore    — disabled                               │
 ├─────────────────────────────────────────────────────────────────┤
 │  adapter/                                                        │
-│    plugin.ts     — definePlugin() → CaPlugin (schema +          │
+│    plugin.ts     — definePlugin() → WaPlugin (schema +          │
 │                    sourceSchema + toCommon/fromCommon + meta)   │
-│    transform.ts  — caGrantToOpportunity() pure fn               │
+│    transform.ts  — waGrantToOpportunity() pure fn               │
 │    getSourceId / getModifiedAt / buildSearchText — per-source   │
 │                    SQL-tier hooks (getModifiedAt drives the     │
 │                    incremental watermark)                       │
-│    CaSourceClient — ISourceClient for the CKAN DataStore        │
-│    (future: extract to @common-grants/cg-ca)                    │
+│    WaSourceClient — ISourceClient for the FundHub WP REST API   │
+│    (future: extract to @common-grants/cg-wa)                    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,10 +97,37 @@ Then hit `http://localhost:8787/docs`.
 
 - **TypeScript + Hono on Cloudflare Workers.** Routes defined with `@hono/zod-openapi` so the OpenAPI spec is auto-generated at `/openapi.json`. Docs UI at `/docs` (Scalar via CDN, no bundled dependency).
 - **Schemas from `@common-grants/sdk`.** No handwritten opportunity schema, filters, or pagination envelope — the SDK provides them. Applicant eligibility uses the native `acceptedApplicantTypes` field.
-- **Custom fields aligned with the [CommonGrants custom fields catalog](https://commongrants.org/custom-fields/).** Catalog value schemas (`agency`, `contactInfo`, `additionalInfo`, `costSharing`) are mirrored verbatim from the grants.gov plugin. Concepts shared with other state sources use **unprefixed keys** (`fundingSource`, `fundingInstrument`, `lastSyncedAt`) defined identically in the PA plugin; source-unique data stays `ca*`-prefixed. Applicant eligibility uses the native `acceptedApplicantTypes` field, and matching-funds requirements fold into `costSharing` (`{ isRequired, percentage, details }`).
+- **Custom fields aligned with the [CommonGrants custom fields catalog](https://commongrants.org/custom-fields/).** Catalog value schemas (`agency`, `contactInfo`, `additionalInfo`, `costSharing`) are mirrored verbatim from the grants.gov plugin. Concepts shared with other state sources use **unprefixed keys** (`fundingSource`, `fundingInstrument`, `lastSyncedAt`) defined identically in the PA plugin; source-unique data stays `wa*`-prefixed. Applicant eligibility uses the native `acceptedApplicantTypes` field, and matching-funds requirements fold into `costSharing` (`{ isRequired, percentage, details }`).
 - **Auto-generated spec validated against the CommonGrants base protocol** via `cg check spec` from `@common-grants/cli`. Runs in CI.
 - **Auto-generated SQL types** via `kysely-codegen`. Never hand-edit `src/storage/sql/schema.ts`.
 - **No deep cross-directory imports.** Every `src/<dir>/` has an `index.ts` public surface. Lint-enforced.
+
+## Porting the adapter
+
+Everything outside `src/adapter/` is Washington-ready. To finish the port, work
+through `src/adapter/` — the module names are already WA-flavored, so this is a
+matter of replacing the bodies:
+
+| File                | What it still does (CA)                                     | What it needs to do (WA)                                                                 |
+| ------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `waSource.ts`       | Zod schema for a CKAN row + `datastore_search` envelope     | Zod schema for a FundHub `funding` post + the WP REST list envelope                      |
+| `WaSourceClient.ts` | Builds `datastore_search?resource_id=…` URLs                | Page `wp-json/wp/v2/funding?per_page=100&page=N`; use the `X-WP-TotalPages` header       |
+| `transform.ts`      | Maps CKAN columns (`PortalID`, `LastUpdated`, …)            | Map FundHub's `id` / `modified` / ACF-style fields                                       |
+| `fields.ts`         | `WaStringListSchema` + mirrored catalog value schemas       | Keep the mirrored catalog schemas verbatim; adjust the source-specific ones              |
+| `plugin.ts`         | Declares `ca*`-prefixed custom fields                       | Rename the keys to `wa*` and re-describe them against FundHub's fields                   |
+| `index.ts`          | `getSourceId` → `PortalID`, `getModifiedAt` → `LastUpdated` | Point both at FundHub's equivalents — `getModifiedAt` must be lexicographically sortable |
+
+Two things to keep as they are:
+
+- The mirrored catalog value schemas in `fields.ts` (`AgencyValueSchema`,
+  `ContactInfoValueSchema`, `AdditionalInfoValueSchema`, `CostSharingValueSchema`)
+  are byte-identical across the PA/CA/WA plugins on purpose. Don't drift them.
+- The unprefixed cross-source keys in `plugin.ts` (`fundingSource`,
+  `fundingInstrument`, `lastSyncedAt`).
+
+Then update the two `vars` in `wrangler.jsonc` (`WA_API_BASE_URL`,
+`WA_RESOURCE_ID`) to whatever shape the new client wants, and refresh the
+fixtures + tests under `__tests__/adapter/`, which still carry CA records.
 
 ## Forking for a different source system
 

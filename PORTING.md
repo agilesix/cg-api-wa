@@ -11,7 +11,7 @@ Each recipe below is a concrete set of diffs, not prose. Pick the recipes that a
 - [3. Scale to Tier 2 (KV on serverless)](#3-scale-to-tier-2-kv-on-serverless)
 - [4. Swap D1 → Postgres (stay on Tier 3)](#4-swap-d1--postgres-stay-on-tier-3)
 - [5. Hosting swap (Workers → Node/Cloud Run)](#5-hosting-swap-workers--nodecloud-run)
-- [6. Bypass the fetch layer (PA hosts internally)](#6-bypass-the-fetch-layer-pa-hosts-internally)
+- [6. Bypass the fetch layer (WA hosts internally)](#6-bypass-the-fetch-layer-wa-hosts-internally)
 - [7. Scale up to Tier 4 (enterprise)](#7-scale-up-to-tier-4-enterprise)
 - [8. Fork for a different source system](#8-fork-for-a-different-source-system)
 
@@ -19,7 +19,7 @@ Each recipe below is a concrete set of diffs, not prose. Pick the recipes that a
 
 ## 1. Scale down to Tier 0 (proxy-only)
 
-No database. Every request hits the upstream PA API, transforms on the fly, and caches in memory for a short TTL.
+No database. Every request hits the upstream WA API, transforms on the fly, and caches in memory for a short TTL.
 
 **Diff:**
 
@@ -35,14 +35,14 @@ No database. Every request hits the upstream PA API, transforms on the fly, and 
 -  const db = createDb(new D1Dialect({ database: env.DB }));
 -  const repo = new SqliteOppRepo(db);
 -  const snapshots = new BucketSnapshotStore(env.SNAPSHOTS);
-+  const client = new PaSourceClient(env.PA_API_BASE_URL);
-+  const repo = new ProxyOppRepo(client, (src: PaGrant) => {
-+    const opp = paGrantToOpportunity(src, new Date().toISOString());
++  const client = new WaSourceClient(env.WA_API_BASE_URL, env.WA_RESOURCE_ID);
++  const repo = new ProxyOppRepo(client, (src: WaGrant) => {
++    const opp = waGrantToOpportunity(src, new Date().toISOString());
 +    // Proxy tier doesn't use content hashing — pass the source id as the hash.
 +    return storedFromCommon(opp, {
 +      sourceId: getSourceId(src),
 +      searchText: buildSearchText(src),
-+      contentHash: src.slug,
++      contentHash: getSourceId(src),
 +    });
 +  });
 +  const snapshots = new NoopSnapshotStore();
@@ -142,22 +142,22 @@ Add a Node entrypoint alongside the Workers one.
 
 ---
 
-## 6. Bypass the fetch layer (PA hosts internally)
+## 6. Bypass the fetch layer (WA hosts internally)
 
-When Pennsylvania itself hosts this API inside their own infrastructure, they may prefer to populate the database directly from their existing eGrants data warehouse rather than fetching from the public `egrants-apibeta` HTTP endpoint on a schedule.
+When Washington itself hosts this API inside their own infrastructure, they may prefer to populate the database directly from the system of record behind FundHub rather than fetching from the public WordPress REST endpoint on a schedule.
 
 **`src/cg.config.ts`:**
 
 ```ts
--const client = new PaSourceClient(env.PA_API_BASE_URL);
+-const client = new WaSourceClient(env.WA_API_BASE_URL, env.WA_RESOURCE_ID);
 -const sync = (): Promise<SyncStats> => runSync({ client, ... });
-+// No client, no sync. PA's internal ETL writes StoredOpportunity rows
++// No client, no sync. WA's internal ETL writes StoredOpportunity rows
 +// directly into the same `opportunities` table via their own pipeline.
 ```
 
-Return `{ repo, snapshots, service, syncSecret, logger, version }` — no `sync`. The admin route is auto-omitted; services, routes, and the PaPlugin remain unchanged.
+Return `{ repo, snapshots, service, syncSecret, logger, version }` — no `sync`. The admin route is auto-omitted; services, routes, and the WaPlugin remain unchanged.
 
-**`wrangler.jsonc`:** remove `triggers.crons`. Remove `vars.PA_API_BASE_URL`.
+**`wrangler.jsonc`:** remove `triggers.crons`. Remove `vars.WA_API_BASE_URL` and `vars.WA_RESOURCE_ID`.
 
 ---
 
@@ -177,16 +177,16 @@ None of the above changes the contract of `IOppRepo` or touches routes, services
 
 ## 8. Fork for a different source system
 
-Example: an adapter for California's grants portal.
+Example: forking this repo for another state — call it `XX`. (This is exactly how the WA repo was produced from the CA one.)
 
-1. **Rename resources** in `wrangler.jsonc` from `pa-grants-*` to `ca-grants-*`. This is the collision-avoidance convention baked into the template.
+1. **Rename resources** in `wrangler.jsonc` from `wa-grants-*` to `xx-grants-*`. This is the collision-avoidance convention baked into the template.
 
 2. **Replace `src/adapter/`** with a new adapter:
-   - `fields.ts`: keep the mirrored shared schemas (`agency`, `contactInfo`, etc.) verbatim for cross-plugin interoperability. Add CA-specific fields as `ca*`.
-   - `plugin.ts`: `definePlugin({ meta, schemas: { Opportunity: { customFields: {...shared, ...caSpecific }, sourceSchema, toCommon, fromCommon } } })` (SDK v0.5.0 — the plugin owns the source schema and transforms; see ADR 005).
-   - `CaGrantsClient.ts`: new `ISourceClient` for CA's upstream.
-   - `transform.ts`: CA's own pure `caGrantToOpportunity()` + reverse builder + helpers (no schema dependency).
-   - `index.ts`: re-export the new public surface, including the per-source `getSourceId` and `buildSearchText` hooks.
+   - `fields.ts`: keep the mirrored shared schemas (`agency`, `contactInfo`, etc.) verbatim for cross-plugin interoperability. Add XX-specific fields as `xx*`.
+   - `plugin.ts`: `definePlugin({ meta, schemas: { Opportunity: { customFields: {...shared, ...xxSpecific }, sourceSchema, toCommon, fromCommon } } })` (SDK v0.5.0 — the plugin owns the source schema and transforms; see ADR 005).
+   - `XxSourceClient.ts`: new `ISourceClient` for XX's upstream.
+   - `transform.ts`: XX's own pure `xxGrantToOpportunity()` + reverse builder + helpers (no schema dependency).
+   - `index.ts`: re-export the new public surface, including the per-source `getSourceId`, `getModifiedAt`, and `buildSearchText` hooks.
 
 3. **Update `src/cg.config.ts`** imports from `./adapter`. The ETL validates each record via `plugin.schemas.Opportunity.toCommon()` (skipping on `errors`) and builds the stored row with the generic `storedFromCommon()` plus the two per-source hooks.
 
@@ -194,4 +194,4 @@ Example: an adapter for California's grants portal.
 
 Everything else — routes, services, ETL, storage tiers, CI/CD, docs UI — is unchanged.
 
-When the adapter stabilizes, extract it as `@common-grants/cg-ca` (or similar) and add it as a workspace dep. The directory layout (`src/adapter/` with an `index.ts` public surface) was designed so this extraction is a folder move, not a rewrite.
+When the adapter stabilizes, extract it as `@common-grants/cg-wa` (or similar) and add it as a workspace dep. The directory layout (`src/adapter/` with an `index.ts` public surface) was designed so this extraction is a folder move, not a rewrite.

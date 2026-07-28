@@ -17,5 +17,5 @@ We ask that you give us a reasonable amount of time to investigate and address t
 
 **Out of scope:**
 
-- Vulnerabilities in the upstream California Grants Portal / open data API (`data.ca.gov`). Please report those to the State of California directly.
+- Vulnerabilities in the upstream Washington FundHub / open data API (`fundhub.wa.gov`). Please report those to the State of Washington directly.
 - Vulnerabilities in the CommonGrants protocol itself. Please report those upstream at <https://github.com/HHS/simpler-grants-protocol/security>.

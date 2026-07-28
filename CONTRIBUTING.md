@@ -1,6 +1,6 @@
 # Contributing guidelines
 
-This project is a CommonGrants-compliant HTTP API that surfaces California Grants Portal data. It is also a reference template for building CommonGrants API proxies against any source system.
+This project is a CommonGrants-compliant HTTP API that surfaces Washington FundHub data. It is also a reference template for building CommonGrants API proxies against any source system.
 
 Before contributing, please read our [LICENSE](LICENSE) and [README](README.md) files. By submitting a contribution, you agree that your code is licensed under the MIT License (the license of this project).
 
@@ -41,16 +41,16 @@ Open an issue describing the feature, the problem it solves, and any context abo
 
 ### Propose a custom field
 
-This API server exposes CA-specific data through CommonGrants custom fields. Before defining a new custom field, **check the [CommonGrants custom fields catalog](https://commongrants.org/custom-fields/)** and the sibling [ts-grants-gov](https://github.com/common-grants/ts-cg-grants-gov) plugin for an existing definition. If a matching field already exists, reuse its exact field key and value schema (see [Custom field alignment](#custom-field-alignment) below) rather than defining a parallel one.
+This API server exposes WA-specific data through CommonGrants custom fields. Before defining a new custom field, **check the [CommonGrants custom fields catalog](https://commongrants.org/custom-fields/)** and the sibling [ts-grants-gov](https://github.com/common-grants/ts-cg-grants-gov) plugin for an existing definition. If a matching field already exists, reuse its exact field key and value schema (see [Custom field alignment](#custom-field-alignment) below) rather than defining a parallel one.
 
 If no suitable field exists, consider proposing it upstream via the CommonGrants custom fields process so other plugins can benefit.
 
 ### Build an adapter for a different source system
 
-This repo is structured so that `src/adapter/` (plugin + transform + HTTP client) is extractable to a separate adapter package (future `@common-grants/cg-ca`). To fork this template for another state or funder:
+This repo is structured so that `src/adapter/` (plugin + transform + HTTP client) is extractable to a separate adapter package (future `@common-grants/cg-wa`). To fork this template for another state or funder:
 
 1. Replace the contents of `src/adapter/` with an adapter for your source system.
-2. Update `wrangler.jsonc` resource names to match your state/funder prefix (e.g. `ca-grants-commongrants`).
+2. Update `wrangler.jsonc` resource names to match your state/funder prefix (e.g. `wa-grants-commongrants`).
 3. Update `src/cg.config.ts` to wire your adapter's `ISourceClient` implementation.
 4. See [PORTING.md](PORTING.md) for details on swapping storage tier or hosting target.
 
@@ -68,14 +68,14 @@ These rules are enforced by ESLint (`no-restricted-imports` + `import/no-restric
 
 ### Custom field alignment
 
-When adding a custom field to the CA plugin, prefer the most-aligned home in this order:
+When adding a custom field to the WA plugin, prefer the most-aligned home in this order:
 
 1. **A native Opportunity field.** Some data has a first-class home on the SDK schema (e.g. applicant eligibility → `acceptedApplicantTypes`). Use it instead of a custom field.
 2. **A registered catalog field.** Check <https://commongrants.org/custom-fields/> and the grants.gov [ts-grants-gov](https://github.com/common-grants/ts-cg-grants-gov) plugin. If a match exists, **mirror its value schema verbatim** into `src/adapter/fields.ts` with a linking comment (e.g. `costSharing`'s `{ isRequired, percentage, details }`).
 3. **A cross-source shared key.** If the concept is equivalent across state sources but absent from the catalog, use an **unprefixed key defined identically in the PA plugin** (e.g. `fundingSource`, `fundingInstrument`, `lastSyncedAt`). Add it to both plugins so values interoperate, and treat it as a candidate to upstream.
-4. **A source-prefixed key.** Only for genuinely CA-unique data, or for concepts whose values mean different things across states — prefix with `ca` so the namespace is clear.
+4. **A source-prefixed key.** Only for genuinely WA-unique data, or for concepts whose values mean different things across states — prefix with `wa` so the namespace is clear.
 
-Cross-plugin alignment is validated by `__tests__/adapter/plugin.test.ts`, which parses a fixture opportunity through `CaPlugin.schemas.Opportunity` and each mirrored value schema.
+Cross-plugin alignment is validated by `__tests__/adapter/plugin.test.ts`, which parses a fixture opportunity through `WaPlugin.schemas.Opportunity` and each mirrored value schema.
 
 ### Database migrations and kysely-codegen
 
