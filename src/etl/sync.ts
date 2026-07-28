@@ -47,19 +47,19 @@ export interface SyncDeps<TSource> {
   /**
    * Extract the source identifier from a raw record. Needed here because
    * `SyncDeps` is generic over `TSource`; only the adapter knows which
-   * field is the natural identifier (CA's `PortalID`, grants.gov's
+   * field is the natural identifier (WA's `PortalID`, grants.gov's
    * `opportunityNumber`, etc.).
    */
   getSourceId: (source: TSource) => string;
 
   /**
    * Optional incremental-sync hook: extract the source's last-modified marker
-   * (e.g. CA's `LastUpdated` string). When provided, a non-forced run reads the
+   * (e.g. WA's `LastUpdated` string). When provided, a non-forced run reads the
    * persisted high-watermark, asks the client for only records modified since
    * then via `listAll({ since })`, and advances the watermark to the max marker
    * seen. Omit it for sources without a reliable per-record modified field —
    * those always do a full scan. The marker must be **lexicographically
-   * ordered** (CA's `"YYYY-MM-DD HH:MM:SS"` qualifies).
+   * ordered** (WA's `"YYYY-MM-DD HH:MM:SS"` qualifies).
    */
   getModifiedAt?: (source: TSource) => string;
 }

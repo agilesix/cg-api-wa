@@ -13,7 +13,7 @@ const DOCS_HTML = `<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CA CommonGrants API Reference</title>
+    <title>WA CommonGrants API Reference</title>
     <style>body { margin: 0 }</style>
   </head>
   <body>
@@ -32,10 +32,10 @@ export function registerDocsRoutes(app: OpenAPIHono): OpenAPIHono {
   app.doc31('/openapi.json', {
     openapi: '3.1.0',
     info: {
-      title: 'CA CommonGrants API',
+      title: 'WA CommonGrants API',
       version: '0.1.0',
       description:
-        'A CommonGrants-compliant HTTP API that surfaces California Grants Portal data. ' +
+        'A CommonGrants-compliant HTTP API that surfaces Washington FundHub data. ' +
         'Generated automatically from Hono + Zod route definitions.',
       license: { name: 'MIT', url: 'https://opensource.org/licenses/MIT' },
     },

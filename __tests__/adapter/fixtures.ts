@@ -1,4 +1,4 @@
-import type { CaGrant } from '../../src/adapter';
+import type { WaGrant } from '../../src/adapter';
 
 /**
  * A realistic fixture derived from an actual record in the California Grants
@@ -6,7 +6,7 @@ import type { CaGrant } from '../../src/adapter';
  * Covers the fully-populated case: an award range, available funds, agency,
  * structured contact, dates, categories, and applicant types.
  */
-export const ca1Fixture: CaGrant = {
+export const ca1Fixture: WaGrant = {
   PortalID: 'ca-178419',
   GrantID: 'G-001',
   Status: 'active',
@@ -51,7 +51,7 @@ export const ca1Fixture: CaGrant = {
  * unparseable award range, a forecasted status, empty dates, a single-value
  * "up to" amount, and an unparseable agency URL.
  */
-export const ca2FixtureEdgeCases: CaGrant = {
+export const ca2FixtureEdgeCases: WaGrant = {
   PortalID: 'ca-edge-2',
   GrantID: '',
   Status: 'forecasted',

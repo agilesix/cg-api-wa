@@ -34,7 +34,7 @@ export function registerHealthRoute(
     return c.json(
       {
         status: 'ok' as const,
-        service: 'ca-commongrants-api',
+        service: 'wa-commongrants-api',
         version,
         lastSync,
       },

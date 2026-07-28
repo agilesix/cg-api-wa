@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildSearchText, getSourceId, caGrantToOpportunity } from '../../src/adapter';
+import { buildSearchText, getSourceId, waGrantToOpportunity } from '../../src/adapter';
 import { storedFromCommon } from '../../src/storage';
 import { ca1Fixture } from '../adapter/fixtures';
 
@@ -9,7 +9,7 @@ import { ca1Fixture } from '../adapter/fixtures';
  * and `searchText` derives from the CG opportunity itself.
  */
 describe('storedFromCommon', () => {
-  const opp = caGrantToOpportunity(ca1Fixture, '2026-06-25T00:00:00Z');
+  const opp = waGrantToOpportunity(ca1Fixture, '2026-06-25T00:00:00Z');
   const row = storedFromCommon(opp, {
     sourceId: getSourceId(ca1Fixture),
     searchText: buildSearchText(ca1Fixture),
@@ -43,7 +43,7 @@ describe('storedFromCommon', () => {
   });
 
   it('leaves money columns null when funding is absent', () => {
-    const noFunding = caGrantToOpportunity(
+    const noFunding = waGrantToOpportunity(
       { ...ca1Fixture, EstAmounts: '', EstAvailFunds: '' },
       '2026-06-25T00:00:00Z',
     );

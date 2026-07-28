@@ -1,12 +1,12 @@
 import { D1Dialect } from './storage/sql/d1-dialect';
 import {
-  CaPlugin,
-  CaSourceClient,
+  WaPlugin,
+  WaSourceClient,
   buildSearchText,
   getSourceId,
   getModifiedAt,
-  caGrantToOpportunity,
-  type CaGrant,
+  waGrantToOpportunity,
+  type WaGrant,
 } from './adapter';
 import type { IOppRepo, ISnapshotStore, Logger, SyncStats } from './core';
 import { runSync, type SyncOptions } from './etl';
@@ -57,7 +57,7 @@ const VERSION = '0.1.0';
  * hosting-agnostic. Swap to a different tier by returning a different
  * combination of `repo` / `snapshots` / `sync` here:
  *
- *   - Tier 0 (proxy): `new ProxyOppRepo(caClient, storedFromCa)`
+ *   - Tier 0 (proxy): `new ProxyOppRepo(waClient, storedFromWa)`
  *     and `sync: undefined`.
  *   - Tier 3 (SQL/D1, default): this function.
  *   - Postgres swap: replace `new D1Dialect(...)` with `new PostgresDialect(...)`.
@@ -73,7 +73,7 @@ export function buildConfig(env: Cloudflare.Env, logger: Logger = console): AppC
   const snapshots = new BucketSnapshotStore(env.SNAPSHOTS);
   const service = new OpportunityService(repo);
 
-  const client = new CaSourceClient(env.CA_API_BASE_URL, env.CA_RESOURCE_ID);
+  const client = new WaSourceClient(env.WA_API_BASE_URL, env.WA_RESOURCE_ID);
 
   const sync = (options?: SyncOptions): Promise<SyncStats> =>
     runSync(
@@ -86,12 +86,12 @@ export function buildConfig(env: Cloudflare.Env, logger: Logger = console): AppC
         // Enables incremental sync: the ETL reads the persisted watermark,
         // fetches only the delta past it, and advances it after a clean run.
         getModifiedAt,
-        toStored: (g: CaGrant, contentHash) => {
+        toStored: (g: WaGrant, contentHash) => {
           // Validate via the plugin's `toCommon`. `definePlugin()` wraps it
           // with `commonSchema` validation, so any non-empty `errors` means the
           // record wouldn't round-trip — skip it rather than persist data that
           // would fail at read time.
-          const { errors } = CaPlugin.schemas.Opportunity.toCommon(g);
+          const { errors } = WaPlugin.schemas.Opportunity.toCommon(g);
           if (errors.length > 0) {
             const detail = errors.map((e) => `${e.path || '<root>'}: ${e.message}`).join('; ');
             logger.warn(`[sync] skipping invalid record sourceId=${getSourceId(g)}: ${detail}`);
@@ -101,7 +101,7 @@ export function buildConfig(env: Cloudflare.Env, logger: Logger = console): AppC
           // dates as strings, whereas the SDK's *validated* `toCommon` output
           // normalizes them to `Date` (which would serialize as datetimes in
           // `rawJson`). Storage keeps the string shape.
-          const opp = caGrantToOpportunity(g, new Date().toISOString());
+          const opp = waGrantToOpportunity(g, new Date().toISOString());
           return storedFromCommon(opp, {
             sourceId: getSourceId(g),
             searchText: buildSearchText(g),

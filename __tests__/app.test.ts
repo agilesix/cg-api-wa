@@ -12,7 +12,7 @@ import type {
   StoredOpportunity,
   SyncStats,
 } from '../src/core';
-import { buildSearchText, getSourceId, caGrantToOpportunity } from '../src/adapter';
+import { buildSearchText, getSourceId, waGrantToOpportunity } from '../src/adapter';
 import { storedFromCommon } from '../src/storage';
 import { ca1Fixture } from './adapter/fixtures';
 
@@ -71,7 +71,7 @@ class FakeRepo implements IOppRepo {
 }
 
 function buildDeps(overrides: Partial<AppConfig> = {}): AppConfig {
-  const opp = caGrantToOpportunity(ca1Fixture, '2026-04-15T00:00:00Z');
+  const opp = waGrantToOpportunity(ca1Fixture, '2026-04-15T00:00:00Z');
   const row = storedFromCommon(opp, {
     sourceId: getSourceId(ca1Fixture),
     searchText: buildSearchText(ca1Fixture),
@@ -101,7 +101,7 @@ describe('GET /health', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { status: string; service: string; version: string };
     expect(body.status).toBe('ok');
-    expect(body.service).toBe('ca-commongrants-api');
+    expect(body.service).toBe('wa-commongrants-api');
     expect(body.version).toBe('0.1.0-test');
   });
 });
@@ -298,7 +298,7 @@ describe('GET /openapi.json', () => {
       paths: Record<string, unknown>;
     };
     expect(spec.openapi).toMatch(/^3\.1/);
-    expect(spec.info.title).toBe('CA CommonGrants API');
+    expect(spec.info.title).toBe('WA CommonGrants API');
     expect(spec.paths['/common-grants/opportunities']).toBeDefined();
     expect(spec.paths['/common-grants/opportunities/{oppId}']).toBeDefined();
     expect(spec.paths['/admin/sync']).toBeDefined();

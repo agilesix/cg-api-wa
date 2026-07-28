@@ -1,20 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildSearchText,
-  caGrantToOpportunity,
-  caOpportunityToGrant,
+  waGrantToOpportunity,
+  waOpportunityToGrant,
   mapApplicantTypes,
   nullIfEmpty,
   nullIfNotUrl,
   normalizeStatus,
   parseAmountRange,
   parseFinancial,
-  parseCaContact,
+  parseWaContact,
   parseMatchingFunds,
   portalIdToCgId,
-  splitCaDateTime,
+  splitWaDateTime,
   splitList,
-  statusToCaString,
+  statusToWaString,
   stripHtml,
 } from '../../src/adapter';
 import { ca1Fixture, ca2FixtureEdgeCases } from './fixtures';
@@ -123,21 +123,21 @@ describe('parseMatchingFunds', () => {
 // Dates
 // =============================================================================
 
-describe('splitCaDateTime', () => {
+describe('splitWaDateTime', () => {
   it('splits a space-separated datetime', () => {
-    expect(splitCaDateTime('2026-08-03 17:00:00')).toEqual({
+    expect(splitWaDateTime('2026-08-03 17:00:00')).toEqual({
       date: '2026-08-03',
       time: '17:00:00',
     });
   });
 
   it('handles a date-only value', () => {
-    expect(splitCaDateTime('2026-08-03')).toEqual({ date: '2026-08-03', time: null });
+    expect(splitWaDateTime('2026-08-03')).toEqual({ date: '2026-08-03', time: null });
   });
 
   it('returns null for unparseable input', () => {
-    expect(splitCaDateTime('not-a-date')).toBeNull();
-    expect(splitCaDateTime('')).toBeNull();
+    expect(splitWaDateTime('not-a-date')).toBeNull();
+    expect(splitWaDateTime('')).toBeNull();
   });
 });
 
@@ -157,8 +157,8 @@ describe('status mapping', () => {
   });
 
   it('round-trips canonical labels', () => {
-    expect(statusToCaString({ value: 'open' })).toBe('active');
-    expect(statusToCaString({ value: 'custom', customValue: 'archived' })).toBe('archived');
+    expect(statusToWaString({ value: 'open' })).toBe('active');
+    expect(statusToWaString({ value: 'custom', customValue: 'archived' })).toBe('archived');
   });
 });
 
@@ -166,10 +166,10 @@ describe('status mapping', () => {
 // Contact
 // =============================================================================
 
-describe('parseCaContact', () => {
+describe('parseWaContact', () => {
   it('parses the structured key: value; format', () => {
     expect(
-      parseCaContact('name: Katie Harrell; email: katie@bof.ca.gov; tel: 1-916-698-1035;'),
+      parseWaContact('name: Katie Harrell; email: katie@bof.ca.gov; tel: 1-916-698-1035;'),
     ).toEqual({
       name: 'Katie Harrell',
       email: 'katie@bof.ca.gov',
@@ -179,7 +179,7 @@ describe('parseCaContact', () => {
   });
 
   it('preserves a bare value in description', () => {
-    expect(parseCaContact('Grants Office')).toEqual({
+    expect(parseWaContact('Grants Office')).toEqual({
       name: null,
       email: null,
       phone: null,
@@ -188,7 +188,7 @@ describe('parseCaContact', () => {
   });
 
   it('returns null when empty', () => {
-    expect(parseCaContact('')).toBeNull();
+    expect(parseWaContact('')).toBeNull();
   });
 });
 
@@ -210,8 +210,8 @@ describe('mapApplicantTypes', () => {
 // Full transform
 // =============================================================================
 
-describe('caGrantToOpportunity (fully-populated fixture)', () => {
-  const opp = caGrantToOpportunity(ca1Fixture, SYNCED_AT);
+describe('waGrantToOpportunity (fully-populated fixture)', () => {
+  const opp = waGrantToOpportunity(ca1Fixture, SYNCED_AT);
 
   it('maps the core fields', () => {
     expect(opp.id).toBe(portalIdToCgId('ca-178419'));
@@ -265,8 +265,8 @@ describe('caGrantToOpportunity (fully-populated fixture)', () => {
   });
 });
 
-describe('caGrantToOpportunity (edge cases)', () => {
-  const opp = caGrantToOpportunity(ca2FixtureEdgeCases, SYNCED_AT);
+describe('waGrantToOpportunity (edge cases)', () => {
+  const opp = waGrantToOpportunity(ca2FixtureEdgeCases, SYNCED_AT);
 
   it('maps forecasted status and falls back to Purpose for description', () => {
     expect(opp.status.value).toBe('forecasted');
@@ -296,9 +296,9 @@ describe('caGrantToOpportunity (edge cases)', () => {
 // Round-trip
 // =============================================================================
 
-describe('caOpportunityToGrant (reverse, best-effort)', () => {
-  const opp = caGrantToOpportunity(ca1Fixture, SYNCED_AT);
-  const back = caOpportunityToGrant(opp);
+describe('waOpportunityToGrant (reverse, best-effort)', () => {
+  const opp = waGrantToOpportunity(ca1Fixture, SYNCED_AT);
+  const back = waOpportunityToGrant(opp);
 
   it('round-trips faithfully where a CG home exists', () => {
     expect(back.PortalID).toBe('ca-178419');

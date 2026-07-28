@@ -9,7 +9,7 @@ import type { StoredOpportunity } from '../core';
  * denormalized column except `searchText` and `sourceId` derives generically
  * from the CG opportunity — so a new source only has to supply those two
  * per-source hooks (plus the content hash) rather than reimplement the whole
- * row builder. (When a second source lands — see the California plan — this is
+ * row builder. (When a second source lands — see the Washington plan — this is
  * the seam to fold into a small standardized binding contract.)
  *
  * Accepts the **string-shaped** opportunity emitted by a plugin's `toCommon`

@@ -49,7 +49,7 @@ export interface SyncLogTable {
 export interface SyncStateTable {
   /** Single-row table: `id` is always `1` (enforced by a CHECK in the migration). */
   id: number;
-  /** Incremental-sync high-watermark (CA's raw `LastUpdated` string), or null. */
+  /** Incremental-sync high-watermark (WA's raw `LastUpdated` string), or null. */
   watermark: string | null;
   /** SQL DEFAULT (datetime('now')) — optional on insert. */
   updated_at: ColumnType<string, string | undefined, string>;

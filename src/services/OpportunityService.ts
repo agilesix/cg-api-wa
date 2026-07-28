@@ -1,5 +1,5 @@
 import type { IOppRepo, OpportunitySearchParams, OppFilters, OppSorting } from '../core';
-import type { CaOpportunityInput } from '../adapter';
+import type { WaOpportunityInput } from '../adapter';
 
 export interface PaginationInfo {
   page: number;
@@ -9,7 +9,7 @@ export interface PaginationInfo {
 }
 
 export interface SearchResult {
-  items: CaOpportunityInput[];
+  items: WaOpportunityInput[];
   paginationInfo: PaginationInfo;
   filterInfo: { filters: OppFilters };
   sortInfo: { sortBy: string; sortOrder: 'asc' | 'desc' };
@@ -25,7 +25,7 @@ const MAX_PAGE_SIZE = 100;
  * Responsibilities:
  *   - Enforce pagination defaults and limits.
  *   - Pass SDK-native filters and sorting through to the repository as-is.
- *   - Deserialize `rawJson` back into the typed `CaOpportunityInput` shape.
+ *   - Deserialize `rawJson` back into the typed `WaOpportunityInput` shape.
  *   - Package results into CG-protocol response envelopes.
  */
 export class OpportunityService {
@@ -38,8 +38,8 @@ export class OpportunityService {
     };
   }
 
-  private toItems(rows: { rawJson: string }[]): CaOpportunityInput[] {
-    return rows.map((row) => JSON.parse(row.rawJson) as CaOpportunityInput);
+  private toItems(rows: { rawJson: string }[]): WaOpportunityInput[] {
+    return rows.map((row) => JSON.parse(row.rawJson) as WaOpportunityInput);
   }
 
   /**
@@ -91,10 +91,10 @@ export class OpportunityService {
     };
   }
 
-  async getById(id: string): Promise<CaOpportunityInput | null> {
+  async getById(id: string): Promise<WaOpportunityInput | null> {
     const row = await this.repo.findById(id);
     if (!row) return null;
-    return JSON.parse(row.rawJson) as CaOpportunityInput;
+    return JSON.parse(row.rawJson) as WaOpportunityInput;
   }
 
   async getLastSyncedAt(): Promise<string | null> {

@@ -10,7 +10,7 @@ import {
   PaginatedBodyParamsSchema,
   PaginatedSchema,
 } from '@common-grants/sdk/schemas';
-import { CaOpportunitySchema } from '../adapter';
+import { WaOpportunitySchema } from '../adapter';
 import type { OpportunityService } from '../services';
 
 // =========================================================================
@@ -22,7 +22,7 @@ const ListQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).optional().default(20).openapi({ example: 20 }),
 });
 
-const PaginatedOpportunitiesSchema = PaginatedSchema(CaOpportunitySchema);
+const PaginatedOpportunitiesSchema = PaginatedSchema(WaOpportunitySchema);
 
 const listRoute = createRoute({
   method: 'get',
@@ -74,7 +74,7 @@ const OpportunityIdParamSchema = z.object({
   oppId: z.string().uuid().openapi({ example: '00000000-0000-5000-8000-000000000001' }),
 });
 
-const GetOneOkSchema = OkSchema(CaOpportunitySchema);
+const GetOneOkSchema = OkSchema(WaOpportunitySchema);
 
 const getOneRoute = createRoute({
   method: 'get',
@@ -134,7 +134,7 @@ const OppSearchRequestSchema = z
   })
   .openapi('OppSearchRequest');
 
-const FilteredOpportunitiesSchema = FilteredSchema(CaOpportunitySchema, OppFiltersSchema);
+const FilteredOpportunitiesSchema = FilteredSchema(WaOpportunitySchema, OppFiltersSchema);
 
 const searchRoute = createRoute({
   method: 'post',

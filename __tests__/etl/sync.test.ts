@@ -288,7 +288,7 @@ describe('runSync incremental (getModifiedAt + watermark)', () => {
       async *listAll(opts) {
         const since = opts?.since ?? null;
         sinceCalls.push(since);
-        // Newest-first, with the `>=` boundary the CA client uses.
+        // Newest-first, with the `>=` boundary the WA client uses.
         const sorted = [...records].sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
         for (const r of sorted) {
           if (since !== null && r.modifiedAt < since) return;

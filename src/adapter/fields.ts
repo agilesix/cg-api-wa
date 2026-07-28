@@ -71,4 +71,4 @@ export const CostSharingValueSchema = z.object({
  * California's `;`-delimited list columns (`Categories`, `ApplicantType`),
  * split into a clean string array by the transform layer.
  */
-export const CaStringListSchema = z.array(z.string());
+export const WaStringListSchema = z.array(z.string());

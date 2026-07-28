@@ -8,12 +8,12 @@ import {
 import {
   AdditionalInfoValueSchema,
   AgencyValueSchema,
-  CaStringListSchema,
+  WaStringListSchema,
   ContactInfoValueSchema,
   CostSharingValueSchema,
 } from './fields';
-import { CaGrantSchema, type CaGrant } from './caSource';
-import { caGrantToOpportunity, caOpportunityToGrant } from './transform';
+import { WaGrantSchema, type WaGrant } from './waSource';
+import { waGrantToOpportunity, waOpportunityToGrant } from './transform';
 
 /**
  * CA custom-field specifications, hoisted to a `const` so the same object can
@@ -31,7 +31,7 @@ import { caGrantToOpportunity, caOpportunityToGrant } from './transform';
  *     etc.) for data that has no ecosystem equivalent. The `ca` prefix marks
  *     the namespace; migrate to a shared key if/when one lands upstream.
  */
-const caCustomFields = {
+const waCustomFields = {
   // --- shared with grants.gov / PA -------------------------------------
   agency: {
     fieldType: 'object',
@@ -84,7 +84,7 @@ const caCustomFields = {
   },
   caCategories: {
     fieldType: 'array',
-    value: CaStringListSchema,
+    value: WaStringListSchema,
     description: "California's category taxonomy (the source `Categories` list, split)",
   },
   caLoi: {
@@ -165,50 +165,50 @@ const caCustomFields = {
  * Type-level inputs only; no runtime schema is referenced here, which keeps
  * this module free of a `plugin ⇄ transform` import cycle.
  */
-type CaTransform = {
+type WaTransform = {
   model: 'Opportunity';
-  sourceSchema: typeof CaGrantSchema;
-  customFields: typeof caCustomFields;
+  sourceSchema: typeof WaGrantSchema;
+  customFields: typeof waCustomFields;
 };
 
 /**
- * Source → CommonGrants. A thin wrapper over the pure `caGrantToOpportunity`
+ * Source → CommonGrants. A thin wrapper over the pure `waGrantToOpportunity`
  * mapper. **No validation here on purpose:** `definePlugin()` wraps this
  * callable with `commonSchema` validation, folding any Zod issues into
  * `TransformResult.errors`.
  */
-const toCommon: ToCommon<CaTransform> = (source) =>
+const toCommon: ToCommon<WaTransform> = (source) =>
   ({
-    result: caGrantToOpportunity(source, new Date().toISOString()) as unknown as CaOpportunity,
+    result: waGrantToOpportunity(source, new Date().toISOString()) as unknown as WaOpportunity,
     errors: [],
-  }) satisfies TransformResult<CaOpportunity>;
+  }) satisfies TransformResult<WaOpportunity>;
 
 /**
- * CommonGrants → source (best-effort, lossy — see `caOpportunityToGrant`).
+ * CommonGrants → source (best-effort, lossy — see `waOpportunityToGrant`).
  * As with `toCommon`, `definePlugin()` wraps this with `sourceSchema`
  * validation, so no explicit parse is needed here.
  */
-const fromCommon: FromCommon<CaTransform> = (common) =>
+const fromCommon: FromCommon<WaTransform> = (common) =>
   ({
-    result: caOpportunityToGrant(common as unknown as CaOpportunityInput),
+    result: waOpportunityToGrant(common as unknown as WaOpportunityInput),
     errors: [],
-  }) satisfies TransformResult<CaGrant>;
+  }) satisfies TransformResult<WaGrant>;
 
 /**
  * The California CommonGrants plugin. v0.5.0 `definePlugin()` owns the schema
  * extension **and** the bidirectional transforms + source schema (see ADR 005).
  */
-export const CaPlugin = definePlugin({
+export const WaPlugin = definePlugin({
   meta: {
-    name: 'ca-grants',
+    name: 'wa-grants',
     version: '0.1.0',
-    sourceSystem: 'ca-grants-portal',
+    sourceSystem: 'wa-fundhub',
     capabilities: ['customFields', 'transforms'],
   },
   schemas: {
     Opportunity: {
-      customFields: caCustomFields,
-      sourceSchema: CaGrantSchema,
+      customFields: waCustomFields,
+      sourceSchema: WaGrantSchema,
       toCommon,
       fromCommon,
     },
@@ -216,14 +216,14 @@ export const CaPlugin = definePlugin({
 } as const);
 
 /** The CG Opportunity Zod schema extended with CA custom fields. */
-export const CaOpportunitySchema = CaPlugin.schemas.Opportunity.commonSchema;
+export const WaOpportunitySchema = WaPlugin.schemas.Opportunity.commonSchema;
 
 /** Inferred TypeScript type for a CA-flavored Opportunity (output shape — dates as `Date`). */
-export type CaOpportunity = z.infer<typeof CaOpportunitySchema>;
+export type WaOpportunity = z.infer<typeof WaOpportunitySchema>;
 
 /**
  * The **input** type of the CA-extended Opportunity schema — the plain JSON
  * shape before Zod applies its `.transform()` steps (dates as strings). The
  * pure mappers in `./transform` produce and consume this shape.
  */
-export type CaOpportunityInput = z.input<typeof CaOpportunitySchema>;
+export type WaOpportunityInput = z.input<typeof WaOpportunitySchema>;

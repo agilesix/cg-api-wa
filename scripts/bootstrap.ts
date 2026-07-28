@@ -27,8 +27,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 // Resource names — the only values forks need to change.
 // Must match the `database_name` and `bucket_name` in wrangler.jsonc.
 // -------------------------------------------------------------------------
-const DB_NAME = 'ca-grants-commongrants';
-const BUCKET_NAME = 'ca-grants-raw-snapshots';
+const DB_NAME = 'wa-grants-commongrants';
+const BUCKET_NAME = 'wa-grants-raw-snapshots';
 const WRANGLER_CONFIG = 'wrangler.jsonc';
 
 // -------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { CaApiError, CaSourceClient } from '../../src/adapter';
+import { WaApiError, WaSourceClient } from '../../src/adapter';
 import { ca1Fixture } from './fixtures';
 
 const ACTION = 'https://data.ca.gov/api/3/action';
@@ -10,7 +10,7 @@ function ckan(records: unknown[], init: ResponseInit = { status: 200 }): Respons
   return new Response(JSON.stringify({ success: true, result: { records } }), init);
 }
 
-describe('CaSourceClient', () => {
+describe('WaSourceClient', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.restoreAllMocks());
 
@@ -19,7 +19,7 @@ describe('CaSourceClient', () => {
       const mockFetch = vi.mocked(globalThis.fetch);
       mockFetch.mockResolvedValueOnce(ckan([ca1Fixture]));
 
-      const client = new CaSourceClient(ACTION, RESOURCE);
+      const client = new WaSourceClient(ACTION, RESOURCE);
       const result = await client.getGrant('ca-178419');
 
       expect(result?.PortalID).toBe('ca-178419');
@@ -33,28 +33,28 @@ describe('CaSourceClient', () => {
 
     it('returns null when the filter matches no records', async () => {
       vi.mocked(globalThis.fetch).mockResolvedValueOnce(ckan([]));
-      const client = new CaSourceClient(ACTION, RESOURCE);
+      const client = new WaSourceClient(ACTION, RESOURCE);
       expect(await client.getGrant('missing')).toBeNull();
     });
 
-    it('throws CaApiError on a non-2xx response', async () => {
+    it('throws WaApiError on a non-2xx response', async () => {
       vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response('boom', { status: 500 }));
-      const client = new CaSourceClient(ACTION, RESOURCE);
-      await expect(client.getGrant('ca-178419')).rejects.toBeInstanceOf(CaApiError);
+      const client = new WaSourceClient(ACTION, RESOURCE);
+      await expect(client.getGrant('ca-178419')).rejects.toBeInstanceOf(WaApiError);
     });
 
-    it('throws CaApiError when the body reports success: false', async () => {
+    it('throws WaApiError when the body reports success: false', async () => {
       vi.mocked(globalThis.fetch).mockResolvedValueOnce(
         new Response(JSON.stringify({ success: false, result: { records: [] } }), { status: 200 }),
       );
-      const client = new CaSourceClient(ACTION, RESOURCE);
-      await expect(client.getGrant('ca-178419')).rejects.toBeInstanceOf(CaApiError);
+      const client = new WaSourceClient(ACTION, RESOURCE);
+      await expect(client.getGrant('ca-178419')).rejects.toBeInstanceOf(WaApiError);
     });
 
     it('normalizes trailing slashes on the base URL', async () => {
       const mockFetch = vi.mocked(globalThis.fetch);
       mockFetch.mockResolvedValueOnce(ckan([ca1Fixture]));
-      const client = new CaSourceClient(`${ACTION}///`, RESOURCE);
+      const client = new WaSourceClient(`${ACTION}///`, RESOURCE);
       await client.getGrant('ca-178419');
       const url = mockFetch.mock.calls[0]?.[0] as string;
       expect(url.startsWith(`${ACTION}/datastore_search`)).toBe(true);
@@ -67,7 +67,7 @@ describe('CaSourceClient', () => {
         ckan([ca1Fixture, { ...ca1Fixture, PortalID: 'ca-2' }]),
       );
 
-      const client = new CaSourceClient(ACTION, RESOURCE);
+      const client = new WaSourceClient(ACTION, RESOURCE);
       const collected = [];
       for await (const g of client.listAll()) collected.push(g);
 
@@ -87,7 +87,7 @@ describe('CaSourceClient', () => {
         ]),
       );
 
-      const client = new CaSourceClient(ACTION, RESOURCE);
+      const client = new WaSourceClient(ACTION, RESOURCE);
       const collected = [];
       for await (const g of client.listAll({ since: '2026-06-20 10:00:00' })) collected.push(g);
 
@@ -95,10 +95,10 @@ describe('CaSourceClient', () => {
       expect(collected.map((g) => g.PortalID)).toEqual(['newer', 'boundary']);
     });
 
-    it('throws CaApiError on a non-2xx response', async () => {
+    it('throws WaApiError on a non-2xx response', async () => {
       vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response('boom', { status: 503 }));
-      const client = new CaSourceClient(ACTION, RESOURCE);
-      await expect(client.listAll().next()).rejects.toBeInstanceOf(CaApiError);
+      const client = new WaSourceClient(ACTION, RESOURCE);
+      await expect(client.listAll().next()).rejects.toBeInstanceOf(WaApiError);
     });
   });
 });

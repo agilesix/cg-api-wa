@@ -1,11 +1,11 @@
--- Initial schema for the SQL tier of the CA CommonGrants API.
+-- Initial schema for the SQL tier of the WA CommonGrants API.
 --
 -- Works on both Cloudflare D1 (SQLite) and any other SQLite engine. For
 -- Postgres, replace FTS5 with tsvector/tsquery — see PORTING.md.
 --
 -- Conventions:
 --   - `id` is the CommonGrants UUID v5 derived from the source identifier.
---   - `source_id` is the raw CA PortalID; UNIQUE so the ETL can use it as the
+--   - `source_id` is the raw WA PortalID; UNIQUE so the ETL can use it as the
 --     upsert lookup key.
 --   - Financial amounts stored as integer cents to avoid float drift.
 --   - `raw_json` holds the fully-serialized CommonGrants Opportunity so the

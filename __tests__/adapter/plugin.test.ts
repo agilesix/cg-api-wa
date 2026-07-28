@@ -4,9 +4,9 @@ import {
   AgencyValueSchema,
   ContactInfoValueSchema,
   CostSharingValueSchema,
-  CaOpportunitySchema,
-  CaPlugin,
-  caGrantToOpportunity,
+  WaOpportunitySchema,
+  WaPlugin,
+  waGrantToOpportunity,
 } from '../../src/adapter';
 import { ca1Fixture } from './fixtures';
 
@@ -16,7 +16,7 @@ import { ca1Fixture } from './fixtures';
  * `CustomCostSharing` value: `{ isRequired, percentage, details }`). This file
  * guards against drift: an opportunity populated with the shared fields
  * (`agency`, `contactInfo`, `additionalInfo`, `costSharing`) must validate under
- * `CaOpportunitySchema`, and each shared value must validate under its mirrored
+ * `WaOpportunitySchema`, and each shared value must validate under its mirrored
  * value schema.
  *
  * NOTE: The live cross-parse against `@common-grants/cg-grants-gov` is paused
@@ -25,7 +25,7 @@ import { ca1Fixture } from './fixtures';
  * cross-parse can be restored cheaply.
  */
 describe('shared-field alignment (mirrored from grants.gov)', () => {
-  const opp = caGrantToOpportunity(ca1Fixture, '2026-06-25T00:00:00Z');
+  const opp = waGrantToOpportunity(ca1Fixture, '2026-06-25T00:00:00Z');
 
   const sharedOnly = {
     id: opp.id,
@@ -43,8 +43,8 @@ describe('shared-field alignment (mirrored from grants.gov)', () => {
     },
   };
 
-  it('a shared-only opportunity validates under CaOpportunitySchema', () => {
-    expect(() => CaOpportunitySchema.parse(sharedOnly)).not.toThrow();
+  it('a shared-only opportunity validates under WaOpportunitySchema', () => {
+    expect(() => WaOpportunitySchema.parse(sharedOnly)).not.toThrow();
   });
 
   it('each shared custom-field value validates under its mirrored value schema', () => {
@@ -61,7 +61,7 @@ describe('shared-field alignment (mirrored from grants.gov)', () => {
   });
 
   it('parsing preserves the shared custom-field values unchanged', () => {
-    const parsed = CaOpportunitySchema.parse(sharedOnly);
+    const parsed = WaOpportunitySchema.parse(sharedOnly);
     expect(parsed.customFields?.['agency']?.value).toEqual({
       code: null,
       name: 'Board of Forestry',
@@ -86,11 +86,11 @@ describe('shared-field alignment (mirrored from grants.gov)', () => {
  * wraps these callables with schema validation, so `toCommon` surfaces invalid
  * output through `TransformResult.errors` rather than throwing.
  */
-describe('CaPlugin.toCommon', () => {
+describe('WaPlugin.toCommon', () => {
   it('returns the transformed opportunity with no errors for a valid record', () => {
-    const { result, errors } = CaPlugin.schemas.Opportunity.toCommon(ca1Fixture);
+    const { result, errors } = WaPlugin.schemas.Opportunity.toCommon(ca1Fixture);
     expect(errors).toEqual([]);
-    expect(result.id).toBe(caGrantToOpportunity(ca1Fixture, '2026-06-25T00:00:00Z').id);
+    expect(result.id).toBe(waGrantToOpportunity(ca1Fixture, '2026-06-25T00:00:00Z').id);
     expect(result.customFields?.['caPortalId']?.value).toBe('ca-178419');
   });
 
@@ -102,7 +102,7 @@ describe('CaPlugin.toCommon', () => {
       PortalID: 'ca-bad-modified',
       LastUpdated: 'not-a-datetime',
     };
-    const { errors } = CaPlugin.schemas.Opportunity.toCommon(bad);
+    const { errors } = WaPlugin.schemas.Opportunity.toCommon(bad);
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.some((e) => (e.path ?? '').includes('lastModifiedAt'))).toBe(true);
   });

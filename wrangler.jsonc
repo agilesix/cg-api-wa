@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "ca-commongrants-api",
+  "name": "wa-commongrants-api",
   "main": "src/index.ts",
   // Latest stable compatibility date at time of scaffolding. See:
   // https://developers.cloudflare.com/workers/configuration/compatibility-dates/
@@ -12,29 +12,34 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "ca-grants-commongrants",
-      "database_id": "587439a4-80df-41a8-a135-fa37a7e9336c",
+      "database_name": "wa-grants-commongrants",
+      // Create with `pnpm run bootstrap` (or `wrangler d1 create
+      // wa-grants-commongrants`) and paste the returned uuid here.
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
       "migrations_dir": "src/storage/sql/migrations",
     },
   ],
   "r2_buckets": [
     {
       "binding": "SNAPSHOTS",
-      "bucket_name": "ca-grants-raw-snapshots",
+      "bucket_name": "wa-grants-raw-snapshots",
     },
   ],
   "triggers": {
-    // Sync every 8 hours. California's Grants Portal refreshes roughly once a
-    // day; running 3×/day means a missed update window or a transient failure
-    // is retried well within 24h. Syncs are incremental (watermark-based), so
-    // each run only fetches the changed delta.
+    // Sync every 8 hours. Inherited from the CA cadence; revisit once
+    // FundHub's actual refresh rate is known. Syncs are incremental
+    // (watermark-based), so each run only fetches the changed delta.
     "crons": ["0 */8 * * *"],
   },
   "vars": {
-    // CKAN action API base + the grants DataStore resource id. The client
-    // builds `datastore_search` requests from these.
-    "CA_API_BASE_URL": "https://data.ca.gov/api/3/action",
-    "CA_RESOURCE_ID": "111c8c88-21f6-453c-ae2c-b4785a0624f5",
+    // FundHub's WordPress REST API base + the resource (post type) the client
+    // reads from — https://fundhub.wa.gov/wp-json/wp/v2/funding?per_page=100
+    //
+    // TODO(adapter): `WaSourceClient` still builds CKAN `datastore_search`
+    // requests against these two values. Reshape them as needed when the
+    // adapter is ported to the WP REST API.
+    "WA_API_BASE_URL": "https://fundhub.wa.gov/wp-json/wp/v2",
+    "WA_RESOURCE_ID": "funding",
     "ENVIRONMENT": "production",
   },
   "observability": {
@@ -50,7 +55,7 @@
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "ca-grants-preview",
+          "database_name": "wa-grants-preview",
           "database_id": "PATCHED_BY_CI",
           "migrations_dir": "src/storage/sql/migrations",
         },
@@ -58,12 +63,12 @@
       "r2_buckets": [
         {
           "binding": "SNAPSHOTS",
-          "bucket_name": "ca-grants-raw-snapshots",
+          "bucket_name": "wa-grants-raw-snapshots",
         },
       ],
       "vars": {
-        "CA_API_BASE_URL": "https://data.ca.gov/api/3/action",
-        "CA_RESOURCE_ID": "111c8c88-21f6-453c-ae2c-b4785a0624f5",
+        "WA_API_BASE_URL": "https://fundhub.wa.gov/wp-json/wp/v2",
+        "WA_RESOURCE_ID": "funding",
         "ENVIRONMENT": "preview",
       },
     },

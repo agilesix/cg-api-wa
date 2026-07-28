@@ -1,19 +1,19 @@
 import type { ISourceClient } from '../core';
-import { CkanDatastoreResponseSchema, type CaGrant } from './caSource';
+import { CkanDatastoreResponseSchema, type WaGrant } from './waSource';
 
 /**
- * Typed error thrown by `CaSourceClient` when the upstream CKAN DataStore
+ * Typed error thrown by `WaSourceClient` when the upstream CKAN DataStore
  * returns a non-OK status or an unsuccessful body. Exposes both the HTTP
  * status and the raw response body so callers can distinguish transient
  * (5xx) from permanent (4xx) failures.
  */
-export class CaApiError extends Error {
+export class WaApiError extends Error {
   readonly status: number;
   readonly body: string;
 
   constructor(status: number, body: string) {
     super(`CA API returned ${status}: ${body.slice(0, 200)}`);
-    this.name = 'CaApiError';
+    this.name = 'WaApiError';
     this.status = status;
     this.body = body;
   }
@@ -35,7 +35,7 @@ const PAGE_SIZE = 1000;
  * The upstream shape (as of 2026-06):
  *
  *   - `GET /datastore_search?resource_id=…` returns
- *     `{ success, result: { records: CaGrant[], total, _links } }`.
+ *     `{ success, result: { records: WaGrant[], total, _links } }`.
  *   - `limit` + `offset` paginate; `sort=LastUpdated desc` orders newest-first.
  *   - `filters={"PortalID":"…"}` fetches a single record by its portal id.
  *   - No auth, no rate limiting observed.
@@ -49,7 +49,7 @@ const PAGE_SIZE = 1000;
  * the whole dataset. `since` is compared against CA's raw `LastUpdated`
  * string, which is lexicographically sortable (`"YYYY-MM-DD HH:MM:SS"`).
  */
-export class CaSourceClient implements ISourceClient<CaGrant> {
+export class WaSourceClient implements ISourceClient<WaGrant> {
   private readonly actionUrl: string;
   private readonly resourceId: string;
 
@@ -63,7 +63,7 @@ export class CaSourceClient implements ISourceClient<CaGrant> {
     this.resourceId = resourceId;
   }
 
-  async getGrant(portalId: string): Promise<CaGrant | null> {
+  async getGrant(portalId: string): Promise<WaGrant | null> {
     const filters = encodeURIComponent(JSON.stringify({ PortalID: portalId }));
     const url =
       `${this.actionUrl}/datastore_search?resource_id=${encodeURIComponent(this.resourceId)}` +
@@ -79,7 +79,7 @@ export class CaSourceClient implements ISourceClient<CaGrant> {
    * re-yielded so a same-second update on a later run isn't missed; the ETL's
    * content-hash short-circuit makes the re-yield a cheap no-op).
    */
-  async *listAll(opts: { since?: string | null } = {}): AsyncGenerator<CaGrant> {
+  async *listAll(opts: { since?: string | null } = {}): AsyncGenerator<WaGrant> {
     const since = opts.since ?? null;
     let offset = 0;
 
@@ -104,13 +104,13 @@ export class CaSourceClient implements ISourceClient<CaGrant> {
     }
   }
 
-  /** Fetch + validate a single CKAN page. Throws {@link CaApiError} on failure. */
+  /** Fetch + validate a single CKAN page. Throws {@link WaApiError} on failure. */
   private async fetchPage(url: string): Promise<CkanDatastoreResponse> {
     const res = await fetch(url, { headers: { accept: 'application/json' } });
-    if (!res.ok) throw new CaApiError(res.status, await res.text());
+    if (!res.ok) throw new WaApiError(res.status, await res.text());
     const json = (await res.json()) as unknown;
     const body = CkanDatastoreResponseSchema.parse(json);
-    if (!body.success) throw new CaApiError(res.status, JSON.stringify(json).slice(0, 500));
+    if (!body.success) throw new WaApiError(res.status, JSON.stringify(json).slice(0, 500));
     return body;
   }
 }
