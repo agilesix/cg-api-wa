@@ -1,119 +1,94 @@
 import { z } from 'zod';
 
-/**
- * Coerce `null` → `""` for CKAN text fields. California's Grants Portal is
- * published through a CKAN DataStore resource (`datastore_search`); almost
- * every column is typed `text` and missing values arrive as `null`
- * (e.g. `GrantID`, `Geography`, `FundingSource`, `EstAvailFunds`). The
- * transform layer already treats `""` as absent via `nullIfEmpty()`, so
- * coercing here keeps the pipeline uniform — identical convention to the PA
- * adapter's `paStr`.
- */
-const waStr = z
-  .string()
-  .nullable()
-  .transform((v) => v ?? '');
+const nullableString = z.string().nullable().optional();
+
+export const WaApplicationLinkSchema = z
+  .object({
+    title: z.string().optional(),
+    url: z.string().optional(),
+    target: z.string().optional(),
+  })
+  .passthrough();
 
 /**
- * Zod schema + TypeScript type for a raw California grant record as returned
- * by the CKAN DataStore.
- *
- * Observed shape from
- * `GET https://data.ca.gov/api/3/action/datastore_search?resource_id=111c8c88-…`
- * (probed 2026-06):
- *
- *   - `PortalID` is the stable business key — unique and non-null across all
- *     ~1,942 records. We use it as the source identifier (PA's `slug` analog).
- *   - `_id` is CKAN's internal row id (integer). It is NOT stable across a
- *     re-import of the resource, so we never key on it.
- *   - All other columns are free-form `text`; missing values are `null`.
- *   - Datetimes are space-separated, timezone-naive
- *     (`"2026-06-22 17:20:00"`) — NOT ISO 8601. The transform layer converts
- *     them (see `waDateToIso` / `splitWaDateTime`).
- *   - Several columns are `;`-delimited lists (`Categories`, `ApplicantType`).
- *   - `MatchingFunds` is a percentage string (`"35%"`) or `"Not Required"`.
- *   - `EstAmounts` is a free-form range (`"Between $5,000 and $375,000"`).
- *   - `ContactInfo` is a structured `key: value;` string
- *     (`"name: Jane; email: jane@ca.gov; tel: 1-916-…;"`).
- *
- * `.passthrough()` lets unknown columns through — CKAN resources can gain
- * columns and we shouldn't fail validation on forward-compatible additions.
+ * Advanced Custom Fields exposed by FundHubWA. The object is passthrough on
+ * purpose: snapshots retain newly added source fields even before the adapter
+ * learns how to promote them into CommonGrants.
+ */
+export const WaAcfSchema = z
+  .object({
+    funding_status: z.string(),
+    featured_funding: z.boolean(),
+    internal_reference_id: z.string(),
+    external_reference_id: z.string(),
+    application_open_date: nullableString,
+    application_close_date: nullableString,
+    application_close_time: nullableString,
+    expiry_date: nullableString,
+    period_of_performance_start: nullableString,
+    period_of_performance_end: nullableString,
+    fund_published_date: nullableString,
+    open_date: nullableString,
+    federal_or_state: z.string(),
+    source: z.string(),
+    total_amount: z.string(),
+    number_of_awards: z.string(),
+    award_start: z.string(),
+    ending_amount: z.string(),
+    disbursement_notes: z.string(),
+    cost_share: z.string(),
+    description: z.string(),
+    pre_application: z.string(),
+    eligibility: z.string(),
+    requirements: z.string(),
+    application_link: z.union([WaApplicationLinkSchema, z.string()]),
+    contact: z.string(),
+    technical_assistance_contact: z.string(),
+    resources: z.string(),
+    score: z.number(),
+    score_reason: z.string(),
+  })
+  .passthrough();
+
+export const WaTermSchema = z
+  .object({
+    id: z.number().int(),
+    name: z.string(),
+    slug: z.string(),
+    taxonomy: z.string(),
+  })
+  .passthrough();
+
+/**
+ * A FundHubWA WordPress `funding` record. We request `_embed=wp:term` so the
+ * adapter receives taxonomy labels instead of opaque numeric term ids.
  */
 export const WaGrantSchema = z
   .object({
-    // Internal CKAN row id — present but never used as a key.
-    _id: z.number().int().optional(),
-
-    // --- identity / lifecycle -------------------------------------------
-    PortalID: z.string().min(1),
-    GrantID: waStr,
-    Status: waStr,
-    LastUpdated: z.string(),
-    ChangeNotes: waStr,
-
-    // --- descriptive ----------------------------------------------------
-    AgencyDept: waStr,
-    Title: waStr,
-    Type: waStr,
-    LOI: waStr,
-    Categories: waStr,
-    CategorySuggestion: waStr,
-    Purpose: waStr,
-    Description: waStr,
-
-    // --- eligibility ----------------------------------------------------
-    ApplicantType: waStr,
-    ApplicantTypeNotes: waStr,
-    Geography: waStr,
-
-    // --- funding --------------------------------------------------------
-    FundingSource: waStr,
-    FundingSourceNotes: waStr,
-    MatchingFunds: waStr,
-    MatchingFundsNotes: waStr,
-    EstAvailFunds: waStr,
-    EstAwards: waStr,
-    EstAmounts: waStr,
-    FundingMethod: waStr,
-    FundingMethodNotes: waStr,
-
-    // --- dates ----------------------------------------------------------
-    OpenDate: waStr,
-    ApplicationDeadline: waStr,
-    AwardPeriod: waStr,
-    ExpAwardDate: waStr,
-
-    // --- application / links / contact ----------------------------------
-    ElecSubmission: waStr,
-    GrantURL: waStr,
-    AgencyURL: waStr,
-    AgencySubscribeURL: waStr,
-    GrantEventsURL: waStr,
-    ContactInfo: waStr,
-    AwardStats: waStr,
+    id: z.number().int(),
+    date_gmt: z.string(),
+    modified_gmt: z.string(),
+    slug: z.string(),
+    link: z.string(),
+    title: z.object({ rendered: z.string() }).passthrough(),
+    acf: WaAcfSchema,
+    'funding-type': z.array(z.number().int()).optional(),
+    'funding-audience': z.array(z.number().int()).optional(),
+    'funding-sector': z.array(z.number().int()).optional(),
+    'funding-disbursement-method': z.array(z.number().int()).optional(),
+    'funding-activity': z.array(z.number().int()).optional(),
+    'funding-location': z.array(z.number().int()).optional(),
+    _embedded: z
+      .object({
+        'wp:term': z.array(z.array(WaTermSchema)).optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 
 export type WaGrant = z.infer<typeof WaGrantSchema>;
+export type WaTerm = z.infer<typeof WaTermSchema>;
 
-/**
- * CKAN `datastore_search` response envelope. We only model the fields the
- * client reads; everything else (`fields`, `total_estimation_threshold`, …)
- * is ignored. The records array is parsed per-row by {@link WaGrantSchema}.
- */
-export const CkanDatastoreResponseSchema = z.object({
-  success: z.boolean(),
-  result: z.object({
-    records: z.array(WaGrantSchema),
-    total: z.number().optional(),
-    limit: z.number().optional(),
-    _links: z
-      .object({
-        start: z.string().optional(),
-        next: z.string().optional(),
-      })
-      .optional(),
-  }),
-});
-
-export type CkanDatastoreResponse = z.infer<typeof CkanDatastoreResponseSchema>;
+export const WordPressFundingPageSchema = z.array(WaGrantSchema);
+export type WordPressFundingPage = z.infer<typeof WordPressFundingPageSchema>;

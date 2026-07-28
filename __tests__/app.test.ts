@@ -14,7 +14,7 @@ import type {
 } from '../src/core';
 import { buildSearchText, getSourceId, waGrantToOpportunity } from '../src/adapter';
 import { storedFromCommon } from '../src/storage';
-import { ca1Fixture } from './adapter/fixtures';
+import { waFixture } from './adapter/fixtures';
 
 // -------------------------------------------------------------------------
 // Fake repository — minimal, adapter-agnostic, reused across route tests.
@@ -71,10 +71,10 @@ class FakeRepo implements IOppRepo {
 }
 
 function buildDeps(overrides: Partial<AppConfig> = {}): AppConfig {
-  const opp = waGrantToOpportunity(ca1Fixture, '2026-04-15T00:00:00Z');
+  const opp = waGrantToOpportunity(waFixture, '2026-07-28T00:00:00Z');
   const row = storedFromCommon(opp, {
-    sourceId: getSourceId(ca1Fixture),
-    searchText: buildSearchText(ca1Fixture),
+    sourceId: getSourceId(waFixture),
+    searchText: buildSearchText(waFixture),
     contentHash: 'hash-1',
   });
   const repo = overrides.repo ?? new FakeRepo([row]);
@@ -144,7 +144,7 @@ describe('GET /common-grants/opportunities/:id', () => {
     };
     expect(body.status).toBe(200);
     expect(body.data.id).toBe(row.id);
-    expect(body.data.title).toBe('Wood Products Innovation Grant');
+    expect(body.data.title).toBe('Connecting Housing & Infrastructure Program');
   });
 
   it('returns 404 when not found', async () => {

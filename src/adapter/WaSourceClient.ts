@@ -1,118 +1,180 @@
 import type { ISourceClient } from '../core';
-import { CkanDatastoreResponseSchema, type WaGrant } from './waSource';
+import {
+  WaGrantSchema,
+  WaTermSchema,
+  WordPressFundingPageSchema,
+  type WaGrant,
+  type WaTerm,
+} from './waSource';
 
-/**
- * Typed error thrown by `WaSourceClient` when the upstream CKAN DataStore
- * returns a non-OK status or an unsuccessful body. Exposes both the HTTP
- * status and the raw response body so callers can distinguish transient
- * (5xx) from permanent (4xx) failures.
- */
 export class WaApiError extends Error {
-  readonly status: number;
-  readonly body: string;
-
-  constructor(status: number, body: string) {
-    super(`CA API returned ${status}: ${body.slice(0, 200)}`);
+  constructor(
+    readonly status: number,
+    readonly body: string,
+  ) {
+    super(`FundHubWA API returned ${status}: ${body.slice(0, 200)}`);
     this.name = 'WaApiError';
-    this.status = status;
-    this.body = body;
   }
 }
 
-/**
- * Number of records requested per page. CKAN caps the effective `limit` at
- * 50,000 (it silently clamps larger values), and the full dataset is ~1,942
- * rows, so any page size ≥ the dataset would work in one request. We page in
- * chunks of 1,000 anyway so a future dataset growth, or a slow-changing
- * incremental scan, stays bounded per request.
- */
-const PAGE_SIZE = 1000;
+const PAGE_SIZE = 100;
+const TAXONOMIES = [
+  'funding-type',
+  'funding-audience',
+  'funding-sector',
+  'funding-disbursement-method',
+  'funding-activity',
+  'funding-location',
+] as const;
+type Taxonomy = (typeof TAXONOMIES)[number];
+
+const FIELDS = [
+  'id',
+  'date_gmt',
+  'modified_gmt',
+  'slug',
+  'link',
+  'title',
+  'acf',
+  'funding-type',
+  'funding-audience',
+  'funding-sector',
+  'funding-disbursement-method',
+  'funding-activity',
+  'funding-location',
+].join(',');
 
 /**
- * HTTP client for the California Grants Portal, published as a CKAN DataStore
- * resource on `data.ca.gov`.
- *
- * The upstream shape (as of 2026-06):
- *
- *   - `GET /datastore_search?resource_id=…` returns
- *     `{ success, result: { records: WaGrant[], total, _links } }`.
- *   - `limit` + `offset` paginate; `sort=LastUpdated desc` orders newest-first.
- *   - `filters={"PortalID":"…"}` fetches a single record by its portal id.
- *   - No auth, no rate limiting observed.
- *
- * Implements {@link ISourceClient} so the ETL and the proxy repository can
- * consume it without knowing it's CA-specific.
- *
- * **Incremental scans.** `listAll({ since })` orders records newest-first and
- * stops as soon as it crosses the `since` watermark — so a steady-state sync
- * (≈ tens of changed rows) returns in a single page instead of re-streaming
- * the whole dataset. `since` is compared against CA's raw `LastUpdated`
- * string, which is lexicographically sortable (`"YYYY-MM-DD HH:MM:SS"`).
+ * Public WordPress REST client for FundHubWA. Only state records are yielded;
+ * federal records are already available through the federal CommonGrants
+ * implementation and would otherwise be duplicated.
  */
 export class WaSourceClient implements ISourceClient<WaGrant> {
-  private readonly actionUrl: string;
-  private readonly resourceId: string;
+  private readonly collectionUrl: string;
+  private readonly baseUrl: string;
+  private termLookupPromise?: Promise<Map<number, WaTerm>>;
 
-  /**
-   * @param baseUrl    CKAN action API base, e.g. `https://data.ca.gov/api/3/action`.
-   * @param resourceId The DataStore resource id for the grants table.
-   */
   constructor(baseUrl: string, resourceId: string) {
-    // Normalize to no trailing slash so we can uniformly append `/datastore_search`.
-    this.actionUrl = baseUrl.replace(/\/+$/, '');
-    this.resourceId = resourceId;
+    this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.collectionUrl = `${this.baseUrl}/${resourceId}`;
   }
 
-  async getGrant(portalId: string): Promise<WaGrant | null> {
-    const filters = encodeURIComponent(JSON.stringify({ PortalID: portalId }));
-    const url =
-      `${this.actionUrl}/datastore_search?resource_id=${encodeURIComponent(this.resourceId)}` +
-      `&filters=${filters}&limit=1`;
-    const body = await this.fetchPage(url);
-    return body.result.records[0] ?? null;
+  async getGrant(sourceId: string): Promise<WaGrant | null> {
+    if (!/^\d+$/.test(sourceId)) return null;
+    const response = await fetch(`${this.collectionUrl}/${sourceId}?${this.commonParams()}`, {
+      headers: { accept: 'application/json' },
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new WaApiError(response.status, await response.text());
+    const grant = await this.withTerms(WaGrantSchema.parse(await response.json()));
+    return isWashingtonStateGrant(grant) ? grant : null;
   }
 
-  /**
-   * Iterate every record, newest-first. When `since` is provided, stop as soon
-   * as a record older than the watermark is reached (the `>=` boundary is
-   * intentional — a record whose `LastUpdated` equals the watermark is
-   * re-yielded so a same-second update on a later run isn't missed; the ETL's
-   * content-hash short-circuit makes the re-yield a cheap no-op).
-   */
   async *listAll(opts: { since?: string | null } = {}): AsyncGenerator<WaGrant> {
-    const since = opts.since ?? null;
-    let offset = 0;
+    for (let page = 1; ; page += 1) {
+      const params = new URLSearchParams({
+        per_page: String(PAGE_SIZE),
+        page: String(page),
+        orderby: 'modified',
+        order: 'desc',
+        _fields: FIELDS,
+      });
+      if (opts.since) params.set('modified_after', toWordPressAfter(opts.since));
 
-    for (;;) {
-      const url =
-        `${this.actionUrl}/datastore_search?resource_id=${encodeURIComponent(this.resourceId)}` +
-        `&limit=${PAGE_SIZE}&offset=${offset}&sort=${encodeURIComponent('LastUpdated desc')}`;
-      const body = await this.fetchPage(url);
-      const records = body.result.records;
-      if (records.length === 0) return;
+      const response = await fetch(`${this.collectionUrl}?${params}`, {
+        headers: { accept: 'application/json' },
+      });
+      // WordPress reports an out-of-range page as 400. We normally stop from
+      // X-WP-TotalPages first, but this makes pagination resilient to churn.
+      if (response.status === 400 && page > 1) {
+        const body = await response.text();
+        if (isOutOfRangePage(body)) return;
+        throw new WaApiError(response.status, body);
+      }
+      if (!response.ok) throw new WaApiError(response.status, await response.text());
 
-      for (const rec of records) {
-        // Records are newest-first: once we drop below the watermark, every
-        // remaining record (this page and all later pages) is older too.
-        if (since !== null && rec.LastUpdated < since) return;
-        yield rec;
+      const records = WordPressFundingPageSchema.parse(await response.json());
+      for (const record of records) {
+        const grant = await this.withTerms(record);
+        if (isWashingtonStateGrant(grant)) yield grant;
       }
 
-      // A short page means we've reached the end of the dataset.
-      if (records.length < PAGE_SIZE) return;
-      offset += PAGE_SIZE;
+      const totalPages = Number(response.headers.get('x-wp-totalpages'));
+      if (
+        records.length < PAGE_SIZE ||
+        (Number.isFinite(totalPages) && totalPages > 0 && page >= totalPages)
+      ) {
+        return;
+      }
     }
   }
 
-  /** Fetch + validate a single CKAN page. Throws {@link WaApiError} on failure. */
-  private async fetchPage(url: string): Promise<CkanDatastoreResponse> {
-    const res = await fetch(url, { headers: { accept: 'application/json' } });
-    if (!res.ok) throw new WaApiError(res.status, await res.text());
-    const json = (await res.json()) as unknown;
-    const body = CkanDatastoreResponseSchema.parse(json);
-    if (!body.success) throw new WaApiError(res.status, JSON.stringify(json).slice(0, 500));
-    return body;
+  private commonParams(): string {
+    return new URLSearchParams({ _fields: FIELDS }).toString();
+  }
+
+  private async withTerms(grant: WaGrant): Promise<WaGrant> {
+    const lookup = await this.termLookup();
+    return {
+      ...grant,
+      _embedded: {
+        'wp:term': TAXONOMIES.map((taxonomy) =>
+          (grant[taxonomy] ?? []).flatMap((id) => {
+            const term = lookup.get(id);
+            return term ? [term] : [];
+          }),
+        ),
+      },
+    };
+  }
+
+  /**
+   * Resolve taxonomy ids once per client. This avoids `_embed=wp:term`, which
+   * repeats roughly 70 KB of Yoast metadata on a typical post.
+   */
+  private termLookup(): Promise<Map<number, WaTerm>> {
+    this.termLookupPromise ??= Promise.all(
+      TAXONOMIES.map(async (taxonomy) => {
+        const params = new URLSearchParams({
+          per_page: '100',
+          _fields: 'id,name,slug,taxonomy',
+        });
+        const response = await fetch(`${this.baseUrl}/${taxonomy}?${params}`, {
+          headers: { accept: 'application/json' },
+        });
+        if (!response.ok) throw new WaApiError(response.status, await response.text());
+        return zodTerms(await response.json(), taxonomy);
+      }),
+    ).then((groups) => new Map(groups.flat().map((term) => [term.id, term] as const)));
+    return this.termLookupPromise;
   }
 }
 
-type CkanDatastoreResponse = ReturnType<typeof CkanDatastoreResponseSchema.parse>;
+export function isWashingtonStateGrant(grant: WaGrant): boolean {
+  return grant.acf.federal_or_state.trim().toLowerCase() === 'state';
+}
+
+function toWordPressAfter(value: string): string {
+  const iso = value.endsWith('Z') ? value : `${value}Z`;
+  const date = new Date(iso);
+  if (Number.isNaN(date.valueOf())) return value;
+  // WordPress `modified_after` is exclusive and FundHub timestamps have
+  // one-second precision. Re-read the previous second so records sharing the
+  // watermark second cannot be missed; content hashes make the overlap cheap.
+  date.setUTCSeconds(date.getUTCSeconds() - 1);
+  return date.toISOString();
+}
+
+function zodTerms(value: unknown, taxonomy: Taxonomy): WaTerm[] {
+  const terms = Array.isArray(value) ? value : [];
+  return terms.map((term) => WaTermSchema.parse({ ...(term as object), taxonomy }));
+}
+
+function isOutOfRangePage(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    return parsed.code === 'rest_post_invalid_page_number';
+  } catch {
+    return false;
+  }
+}

@@ -1,104 +1,100 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WaApiError, WaSourceClient } from '../../src/adapter';
-import { ca1Fixture } from './fixtures';
+import { federalFixture, waFixture } from './fixtures';
 
-const ACTION = 'https://data.ca.gov/api/3/action';
-const RESOURCE = '111c8c88-21f6-453c-ae2c-b4785a0624f5';
-
-/** Build a CKAN `datastore_search` envelope Response. */
-function ckan(records: unknown[], init: ResponseInit = { status: 200 }): Response {
-  return new Response(JSON.stringify({ success: true, result: { records } }), init);
-}
+const BASE = 'https://fundhub.wa.gov/wp-json/wp/v2';
 
 describe('WaSourceClient', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.restoreAllMocks());
 
-  describe('getGrant', () => {
-    it('fetches a single record by PortalID via a CKAN filter', async () => {
-      const mockFetch = vi.mocked(globalThis.fetch);
-      mockFetch.mockResolvedValueOnce(ckan([ca1Fixture]));
-
-      const client = new WaSourceClient(ACTION, RESOURCE);
-      const result = await client.getGrant('ca-178419');
-
-      expect(result?.PortalID).toBe('ca-178419');
-      const url = mockFetch.mock.calls[0]?.[0] as string;
-      expect(url).toContain('/datastore_search');
-      expect(url).toContain(`resource_id=${RESOURCE}`);
-      // filters={"PortalID":"ca-178419"} URL-encoded
-      expect(url).toContain(encodeURIComponent(JSON.stringify({ PortalID: 'ca-178419' })));
-      expect(url).toContain('limit=1');
-    });
-
-    it('returns null when the filter matches no records', async () => {
-      vi.mocked(globalThis.fetch).mockResolvedValueOnce(ckan([]));
-      const client = new WaSourceClient(ACTION, RESOURCE);
-      expect(await client.getGrant('missing')).toBeNull();
-    });
-
-    it('throws WaApiError on a non-2xx response', async () => {
-      vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response('boom', { status: 500 }));
-      const client = new WaSourceClient(ACTION, RESOURCE);
-      await expect(client.getGrant('ca-178419')).rejects.toBeInstanceOf(WaApiError);
-    });
-
-    it('throws WaApiError when the body reports success: false', async () => {
-      vi.mocked(globalThis.fetch).mockResolvedValueOnce(
-        new Response(JSON.stringify({ success: false, result: { records: [] } }), { status: 200 }),
-      );
-      const client = new WaSourceClient(ACTION, RESOURCE);
-      await expect(client.getGrant('ca-178419')).rejects.toBeInstanceOf(WaApiError);
-    });
-
-    it('normalizes trailing slashes on the base URL', async () => {
-      const mockFetch = vi.mocked(globalThis.fetch);
-      mockFetch.mockResolvedValueOnce(ckan([ca1Fixture]));
-      const client = new WaSourceClient(`${ACTION}///`, RESOURCE);
-      await client.getGrant('ca-178419');
-      const url = mockFetch.mock.calls[0]?.[0] as string;
-      expect(url.startsWith(`${ACTION}/datastore_search`)).toBe(true);
-    });
+  it('gets a state record by WordPress id with embedded terms', async () => {
+    mockWordPress(waFixture);
+    const result = await new WaSourceClient(BASE, 'funding').getGrant('2080');
+    expect(result?.id).toBe(2080);
+    expect(fetchUrls().some((url) => url.includes('/funding/2080?'))).toBe(true);
+    expect(fetchUrls().some((url) => url.includes('/funding-type?'))).toBe(true);
   });
 
-  describe('listAll', () => {
-    it('yields every record from a single (short) page', async () => {
-      vi.mocked(globalThis.fetch).mockResolvedValueOnce(
-        ckan([ca1Fixture, { ...ca1Fixture, PortalID: 'ca-2' }]),
-      );
+  it('does not expose federal or non-numeric records', async () => {
+    mockWordPress(federalFixture);
+    const client = new WaSourceClient(BASE, 'funding');
+    await expect(client.getGrant('2081')).resolves.toBeNull();
+    await expect(client.getGrant('not-an-id')).resolves.toBeNull();
+  });
 
-      const client = new WaSourceClient(ACTION, RESOURCE);
-      const collected = [];
-      for await (const g of client.listAll()) collected.push(g);
+  it('paginates and yields only state records', async () => {
+    const headers = { 'x-wp-totalpages': '1' };
+    mockWordPress([waFixture, federalFixture], headers);
+    const records = [];
+    for await (const grant of new WaSourceClient(BASE, 'funding').listAll()) records.push(grant);
+    expect(records.map((grant) => grant.id)).toEqual([2080]);
+  });
 
-      expect(collected.map((g) => g.PortalID)).toEqual(['ca-178419', 'ca-2']);
-      // sort=LastUpdated desc is requested
-      const url = vi.mocked(globalThis.fetch).mock.calls[0]?.[0] as string;
-      expect(url).toContain(`sort=${encodeURIComponent('LastUpdated desc')}`);
-    });
+  it('passes the incremental watermark as modified_after', async () => {
+    mockWordPress([waFixture], { 'x-wp-totalpages': '1' });
+    const client = new WaSourceClient(BASE, 'funding');
+    for await (const _grant of client.listAll({ since: '2026-07-28T20:34:40Z' })) {
+      // consume
+    }
+    expect(
+      fetchUrls().some((url) => url.includes('modified_after=2026-07-28T20%3A34%3A39.000Z')),
+    ).toBe(true);
+  });
 
-    it('early-stops at the `since` watermark (records are newest-first)', async () => {
-      // Server returns newest-first; the watermark is the middle record.
-      vi.mocked(globalThis.fetch).mockResolvedValueOnce(
-        ckan([
-          { ...ca1Fixture, PortalID: 'newer', LastUpdated: '2026-06-22 17:23:55' },
-          { ...ca1Fixture, PortalID: 'boundary', LastUpdated: '2026-06-20 10:00:00' },
-          { ...ca1Fixture, PortalID: 'older', LastUpdated: '2026-06-01 08:00:00' },
-        ]),
-      );
+  it('only treats WordPress out-of-range errors as the end of pagination', async () => {
+    const fullPage = Array.from({ length: 100 }, (_, id) => ({ ...waFixture, id: id + 1 }));
+    mockFundingPages([
+      Response.json(fullPage),
+      Response.json(
+        { code: 'rest_post_invalid_page_number', message: 'The page number is too large.' },
+        { status: 400 },
+      ),
+    ]);
+    const records = [];
+    for await (const grant of new WaSourceClient(BASE, 'funding').listAll()) records.push(grant);
+    expect(records).toHaveLength(100);
 
-      const client = new WaSourceClient(ACTION, RESOURCE);
-      const collected = [];
-      for await (const g of client.listAll({ since: '2026-06-20 10:00:00' })) collected.push(g);
+    vi.mocked(fetch).mockReset();
+    mockFundingPages([
+      Response.json(fullPage),
+      Response.json({ code: 'bad_request' }, { status: 400 }),
+    ]);
+    const iterator = new WaSourceClient(BASE, 'funding').listAll();
+    for (let index = 0; index < 100; index += 1) await iterator.next();
+    await expect(iterator.next()).rejects.toBeInstanceOf(WaApiError);
+  });
 
-      // `>=` boundary: 'newer' and 'boundary' are yielded; 'older' stops the scan.
-      expect(collected.map((g) => g.PortalID)).toEqual(['newer', 'boundary']);
-    });
-
-    it('throws WaApiError on a non-2xx response', async () => {
-      vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response('boom', { status: 503 }));
-      const client = new WaSourceClient(ACTION, RESOURCE);
-      await expect(client.listAll().next()).rejects.toBeInstanceOf(WaApiError);
-    });
+  it('returns null for 404 and throws typed errors otherwise', async () => {
+    const client = new WaSourceClient(BASE, 'funding');
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('missing', { status: 404 }));
+    await expect(client.getGrant('9999')).resolves.toBeNull();
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('boom', { status: 503 }));
+    await expect(client.getGrant('2080')).rejects.toBeInstanceOf(WaApiError);
   });
 });
+
+function fetchUrls(): string[] {
+  return vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+}
+
+function mockWordPress(funding: unknown, headers: Record<string, string> = {}): void {
+  vi.mocked(fetch).mockImplementation(async (input) => {
+    const url = String(input);
+    if (/\/funding-(?:type|audience|sector|disbursement-method|activity|location)\?/.test(url)) {
+      return Response.json([]);
+    }
+    return Response.json(funding, { headers });
+  });
+}
+
+function mockFundingPages(pages: Response[]): void {
+  vi.mocked(fetch).mockImplementation(async (input) => {
+    const url = String(input);
+    if (/\/funding-(?:type|audience|sector|disbursement-method|activity|location)\?/.test(url)) {
+      return Response.json([]);
+    }
+    const page = Number(new URL(url).searchParams.get('page') ?? '1');
+    return pages[page - 1] ?? pages.at(-1)!;
+  });
+}

@@ -1,769 +1,463 @@
 import { v5 as uuidv5 } from 'uuid';
-import type { WaGrant } from './waSource';
 import type { WaOpportunityInput } from './plugin';
+import type { WaGrant, WaTerm } from './waSource';
 
-/**
- * Pure mapping logic between raw California grant records (CKAN DataStore) and
- * the CommonGrants `Opportunity` shape. No I/O, no DB, no Workers types, and —
- * importantly — **no schema dependency**: validation lives in the plugin's
- * `toCommon` / `fromCommon` wrappers (`./plugin`), which fold any Zod issues
- * into the SDK's `TransformResult.errors`. Keeping this module schema-free
- * avoids a circular import (`plugin` → `transform` for the builders;
- * `transform` → `plugin` only for the input *type*, erased at runtime).
- */
-
-/** Element type of `WaOpportunityInput.keyDates.otherDates`. */
-type OtherDateInput = NonNullable<
-  NonNullable<WaOpportunityInput['keyDates']>['otherDates']
->[string];
-
-/** Element type of `WaOpportunityInput.customFields`. */
-type CustomFieldInput = NonNullable<WaOpportunityInput['customFields']>[string];
-
-/** A parsed CG `Money`-shaped value. */
+type CustomField = NonNullable<WaOpportunityInput['customFields']>[string];
+type ApplicantType = NonNullable<WaOpportunityInput['acceptedApplicantTypes']>[number];
+type OtherDate = NonNullable<NonNullable<WaOpportunityInput['keyDates']>['otherDates']>[string];
 type Money = { amount: string; currency: 'USD' };
 
-// =============================================================================
-// UUID v5 namespace
-// =============================================================================
+const WA_NAMESPACE = uuidv5('wa.fundhub.commongrants.api', uuidv5.DNS);
 
-/**
- * Deterministic namespace for CA CommonGrants UUIDs. Derived once from the DNS
- * namespace + `"ca.commongrants.api"` so it is stable forever without a
- * hardcoded magic UUID literal. A given CA `PortalID` always maps to the same
- * CG id.
- */
-const WA_NAMESPACE = uuidv5('wa.commongrants.api', uuidv5.DNS);
-
-/** Map a CA portal id to a deterministic CommonGrants UUID. */
-export function portalIdToCgId(portalId: string): string {
-  return uuidv5(portalId, WA_NAMESPACE);
+export function portalIdToCgId(sourceId: string): string {
+  return uuidv5(sourceId, WA_NAMESPACE);
 }
 
-// =============================================================================
-// Primitive normalization helpers
-// =============================================================================
-
-/** Trim + treat `""` as `null`. */
-export function nullIfEmpty(s: string | null | undefined): string | null {
-  if (s == null) return null;
-  const trimmed = s.trim();
-  return trimmed === '' ? null : trimmed;
+export function nullIfEmpty(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? '';
+  return trimmed ? trimmed : null;
 }
 
-/**
- * Like `nullIfEmpty`, but additionally returns null when the value isn't a
- * parseable absolute URL. Use for fields the CommonGrants schema validates
- * with `.url()` (e.g. `Opportunity.source`) so free-form values like `"TBD"`
- * don't slip through and break downstream Zod parsing.
- */
-export function nullIfNotUrl(s: string | null): string | null {
-  if (!s) return null;
+export function nullIfNotUrl(value: string | null): string | null {
+  if (!value) return null;
   try {
-    new URL(s);
-    return s;
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? value : null;
   } catch {
     return null;
   }
 }
 
-/**
- * Best-effort strip of HTML tags. CA's `Description` / `Purpose` occasionally
- * carry simple markup; this produces clean plain text. Not a security
- * sanitizer — do not rely on it for XSS protection.
- */
-export function stripHtml(s: string | null): string | null {
-  if (!s) return null;
-  const plain = s
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+export function stripHtml(value: string | null): string | null {
+  if (!value) return null;
+  const decoded = decodeEntities(
+    value
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(?:p|li|h[1-6])>/gi, '\n')
+      .replace(/<li[^>]*>/gi, '• ')
+      .replace(/<[^>]+>/g, ''),
+  )
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-  return plain === '' ? null : plain;
+  return decoded || null;
 }
 
-/** Split a CA `;`-delimited list column into a trimmed, non-empty array. */
-export function splitList(s: string | null): string[] {
-  if (!s) return [];
-  return s
-    .split(';')
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0);
-}
-
-// =============================================================================
-// Financial parsing
-// =============================================================================
-
-const money = (n: number): Money => ({ amount: n.toFixed(2), currency: 'USD' });
-
-/** Convert a parsed `Money` to integer cents. Null in, null out. */
-export function moneyToCents(m: { amount: string } | null | undefined): number | null {
-  if (!m) return null;
-  const dollars = Number(m.amount);
-  if (!Number.isFinite(dollars)) return null;
-  return Math.round(dollars * 100);
-}
-
-/**
- * Parse a single CA financial string into a `Money`, or null. Handles
- * `"$500,000"`, `"$2 million"`, `"500k"`, plain integers. Returns null for
- * empty/free-form values (`"Varies"`, `"Dependent on submissions"`).
- */
-export function parseFinancial(raw: string | null): Money | null {
-  if (!raw) return null;
-  const match = raw.match(/\$?\s*([\d][\d,]*(?:\.\d+)?)\s*(million|thousand|m|k)?/i);
-  if (!match) return null;
-  let n = Number((match[1] ?? '').replace(/,/g, ''));
-  if (!Number.isFinite(n) || n < 0) return null;
-  const unit = (match[2] ?? '').toLowerCase();
-  if (unit.startsWith('m')) n *= 1_000_000;
-  else if (unit.startsWith('k') || unit.startsWith('thousand')) n *= 1_000;
-  return money(n);
-}
-
-/**
- * Parse CA's free-form `EstAmounts` into a `{ min, max }` award range.
- *
- * Observed formats:
- *   - `"Between $5,000 and $375,000"` → min 5,000 / max 375,000
- *   - `"$5,000 - $375,000"` / `"$5,000 to $375,000"` → range
- *   - `"$50,000"` / `"Up to $100,000"` → single value → `max`
- *   - `"At least $10,000"` / `"Minimum $10,000"` → single value → `min`
- *   - `"Varies"`, `"Dependent on …"` → `{ null, null }`
- *
- * Requires a `$` so bare numbers in prose aren't mistaken for amounts. The raw
- * string is always preserved by the caller in `caEstAmountsRaw`, so a missed
- * parse loses nothing.
- */
-export function parseAmountRange(raw: string | null): { min: Money | null; max: Money | null } {
-  if (!raw) return { min: null, max: null };
-  const matches = [...raw.matchAll(/\$\s*([\d][\d,]*(?:\.\d+)?)\s*(million|thousand|m|k)?/gi)];
-  const amounts = matches
-    .map((m) => {
-      let n = Number((m[1] ?? '').replace(/,/g, ''));
-      const unit = (m[2] ?? '').toLowerCase();
-      if (unit.startsWith('m')) n *= 1_000_000;
-      else if (unit.startsWith('k') || unit.startsWith('thousand')) n *= 1_000;
-      return n;
-    })
-    .filter((n) => Number.isFinite(n) && n >= 0);
-
-  if (amounts.length === 0) return { min: null, max: null };
-
-  const lo = Math.min(...amounts);
-  const hi = Math.max(...amounts);
-
-  if (amounts.length === 1) {
-    // A single amount: decide whether it's a floor or a ceiling from context.
-    if (/\b(min|minimum|at least|starting|no less than)\b/i.test(raw)) {
-      return { min: money(lo), max: null };
-    }
-    return { min: null, max: money(hi) };
-  }
-  return { min: money(lo), max: money(hi) };
-}
-
-// =============================================================================
-// Matching-funds parsing
-// =============================================================================
-
-/**
- * Parse CA's `MatchingFunds` column. Values are a percentage (`"35%"`,
- * `"0%"`, `"100%"`) or the literal `"Not Required"`.
- *
- * Returns `isRequired` plus the match `percentage` (0–100) for the standard
- * `costSharing` field. `"0%"` is treated as not required. Returns null for
- * empty/unrecognized input.
- */
-export function parseMatchingFunds(
-  raw: string | null,
-): { isRequired: boolean; percentage: number | null } | null {
-  const s = nullIfEmpty(raw);
-  if (s === null) return null;
-  if (/not\s*required/i.test(s)) return { isRequired: false, percentage: null };
-  const pct = s.match(/^(\d+(?:\.\d+)?)\s*%$/);
-  if (pct) {
-    const percentage = Number(pct[1]);
-    if (Number.isFinite(percentage) && percentage >= 0) {
-      return { isRequired: percentage > 0, percentage };
-    }
-  }
-  return null;
-}
-
-/** Inverse: a 0–100 percentage back to CA's `"NN%"` string. */
-function percentToWaPercent(percentage: unknown): string {
-  if (typeof percentage !== 'number' || !Number.isFinite(percentage)) return '';
-  return `${Math.round(percentage)}%`;
-}
-
-// =============================================================================
-// Date / time handling
-// =============================================================================
-
-/**
- * Split a CA datetime (`"2026-06-22 17:20:00"`, timezone-naive) into the
- * `{ date, time }` pair the CG `SingleDateEventSchema` expects. Tolerates a
- * date-only value (`time` → null) and ISO-style `T` separators. Returns null
- * for empty/unparseable input.
- */
-export function splitWaDateTime(raw: string | null): { date: string; time: string | null } | null {
-  if (!raw) return null;
-  const match = raw.match(/^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?)?/);
-  if (!match) return null;
-  return { date: match[1] as string, time: match[2] ?? null };
-}
-
-/**
- * Convert a CA datetime into an ISO 8601 UTC string for the CG
- * `createdAt` / `lastModifiedAt` fields (which require a full datetime).
- *
- * CA timestamps carry no timezone; we treat them as UTC and append `Z`. This
- * is a deterministic, sortable normalization — the incremental-sync watermark
- * compares CA's *raw* `LastUpdated` string (not this value), so the UTC
- * assumption never affects change detection. Returns `""` when unparseable.
- */
-export function waDateToIso(raw: string | null): string {
-  const parts = splitWaDateTime(raw);
-  if (!parts) return '';
-  return `${parts.date}T${parts.time ?? '00:00:00'}Z`;
-}
-
-// =============================================================================
-// Status mapping
-// =============================================================================
-
-const STATUS_MAP: Record<string, 'forecasted' | 'open' | 'closed'> = {
-  active: 'open',
-  closed: 'closed',
-  forecasted: 'forecasted',
-};
-
-/** Canonical CA label for each mapped CG status (used by `fromCommon`). */
-const STATUS_REVERSE_MAP: Record<'forecasted' | 'open' | 'closed', string> = {
-  open: 'active',
-  closed: 'closed',
-  forecasted: 'forecasted',
-};
-
-/**
- * Map CA's `Status` (`active` | `closed` | `forecasted`) to the CG `OppStatus`
- * enum. Unknown values fall back to `custom` with the original string in
- * `customValue`.
- */
-export function normalizeStatus(raw: string | null): {
-  value: 'forecasted' | 'open' | 'closed' | 'custom';
-  customValue: string | null;
-} {
-  const norm = (raw ?? '').trim().toLowerCase();
-  const mapped = STATUS_MAP[norm];
-  if (mapped) return { value: mapped, customValue: null };
-  if (norm === '') return { value: 'custom', customValue: null };
-  return { value: 'custom', customValue: raw };
-}
-
-/** Inverse of `normalizeStatus`. Lossy for mapped statuses (canonical label). */
-export function statusToWaString(status: {
-  value: 'forecasted' | 'open' | 'closed' | 'custom';
-  customValue?: string | null;
-}): string {
-  if (status.value === 'custom') return status.customValue ?? '';
-  return STATUS_REVERSE_MAP[status.value];
-}
-
-// =============================================================================
-// Applicant-type mapping (native `acceptedApplicantTypes`)
-// =============================================================================
-
-/** Element type of the native `acceptedApplicantTypes` array. */
-type ApplicantTypeInput = NonNullable<WaOpportunityInput['acceptedApplicantTypes']>[number];
-type ApplicantTypeValue = ApplicantTypeInput['value'];
-
-/**
- * CA applicant-type label → CommonGrants `ApplicantTypeOptionsEnum`, for the
- * confident matches only. CA's labels are coarser than the standard enum
- * (e.g. "Business" doesn't say small-vs-large; "Nonprofit" doesn't say 501c3;
- * "Public Agency" doesn't say which level of government), so anything not
- * listed here is emitted as `custom` with the original label preserved.
- */
-const WA_APPLICANT_TYPE_MAP: Record<string, ApplicantTypeValue> = {
-  individual: 'individual',
-  'tribal government': 'government_tribal',
-};
-
-/** Reverse map for reconstructing CA labels from mapped enum values. */
-const WA_APPLICANT_TYPE_REVERSE: Partial<Record<ApplicantTypeValue, string>> = {
-  individual: 'Individual',
-  government_tribal: 'Tribal Government',
-};
-
-/**
- * Map CA's `;`-delimited `ApplicantType` list onto the native
- * `acceptedApplicantTypes` field. Confident matches use the standard enum;
- * everything else becomes `custom` with the original label in `customValue`,
- * so no information is lost.
- */
-export function mapApplicantTypes(raw: string | null): ApplicantTypeInput[] {
-  return splitList(raw).map((label) => {
-    const mapped = WA_APPLICANT_TYPE_MAP[label.toLowerCase()];
-    return mapped
-      ? { value: mapped, customValue: null, description: null }
-      : { value: 'custom', customValue: label, description: null };
+function decodeEntities(value: string): string {
+  const named: Record<string, string> = {
+    amp: '&',
+    apos: "'",
+    gt: '>',
+    lt: '<',
+    nbsp: ' ',
+    quot: '"',
+  };
+  return value.replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, (match, entity: string) => {
+    if (entity.startsWith('#x')) return String.fromCodePoint(Number.parseInt(entity.slice(2), 16));
+    if (entity.startsWith('#')) return String.fromCodePoint(Number.parseInt(entity.slice(1), 10));
+    return named[entity.toLowerCase()] ?? match;
   });
 }
 
-/** Reverse of `mapApplicantTypes`: reconstruct CA's `;`-delimited string. */
-function applicantTypesToWaString(types: unknown): string {
-  if (!Array.isArray(types)) return '';
-  return types
-    .map((t) => {
-      const v = (t ?? {}) as { value?: unknown; customValue?: unknown };
-      if (v.value === 'custom') return typeof v.customValue === 'string' ? v.customValue : '';
-      return WA_APPLICANT_TYPE_REVERSE[v.value as ApplicantTypeValue] ?? String(v.value ?? '');
-    })
-    .filter((s) => s.length > 0)
-    .join('; ');
+export function parseFinancial(value: string | null): Money | null {
+  if (!value) return null;
+  const normalized = value.replace(/[$,\s]/g, '');
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) return null;
+  const amount = Number(normalized);
+  return Number.isFinite(amount) ? { amount: amount.toFixed(2), currency: 'USD' } : null;
 }
 
-// =============================================================================
-// Contact parsing
-// =============================================================================
+export function moneyToCents(value: { amount: string } | null | undefined): number | null {
+  if (!value) return null;
+  const dollars = Number(value.amount);
+  return Number.isFinite(dollars) ? Math.round(dollars * 100) : null;
+}
 
-/**
- * Parse CA's structured `ContactInfo` string into a CG contact.
- *
- * Format: semicolon-delimited `key: value` pairs, e.g.
- *   `"name: Katie Harrell; email: katie.harrell@bof.ca.gov; tel: 1-916-…;"`
- *
- * Recognizes `name`, `email`, and `tel`/`phone` keys (case-insensitive); any
- * unrecognized pairs are preserved in `description` so nothing is lost.
- */
+export function waDate(value: string | null | undefined): string | null {
+  const raw = nullIfEmpty(value);
+  if (!raw || !/^\d{8}$/.test(raw)) return null;
+  return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
+}
+
+function gmtDateTime(value: string): string {
+  return `${value.replace(/Z$/, '')}Z`;
+}
+
+export function normalizeStatus(raw: string): {
+  value: 'open' | 'closed' | 'custom';
+  customValue: string | null;
+} {
+  const status = raw.trim().toLowerCase();
+  if (status === 'active') return { value: 'open', customValue: null };
+  if (status === 'closed' || status === 'expired') {
+    return { value: 'closed', customValue: status === 'expired' ? 'expired' : null };
+  }
+  return { value: 'custom', customValue: raw || null };
+}
+
 export function parseWaContact(raw: string | null): {
   name: string | null;
   email: string | null;
   phone: string | null;
   description: string | null;
 } | null {
-  const s = nullIfEmpty(raw);
-  if (s === null) return null;
-
-  let name: string | null = null;
-  let email: string | null = null;
-  let phone: string | null = null;
-  const extra: string[] = [];
-
-  for (const part of s.split(';')) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-    const sep = trimmed.indexOf(':');
-    if (sep === -1) {
-      extra.push(trimmed);
-      continue;
-    }
-    const key = trimmed.slice(0, sep).trim().toLowerCase();
-    const value = trimmed.slice(sep + 1).trim();
-    if (!value) continue;
-    if (key === 'name' && name === null) name = value;
-    else if (key === 'email' && email === null) email = value;
-    else if ((key === 'tel' || key === 'phone' || key === 'telephone') && phone === null)
-      phone = value;
-    else extra.push(`${key}: ${value}`);
-  }
-
-  if (name === null && email === null && phone === null && extra.length === 0) return null;
-  return { name, email, phone, description: extra.length ? extra.join('; ') : null };
+  const plain = stripHtml(raw);
+  if (!plain) return null;
+  const email = plain.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i)?.[0] ?? null;
+  const phone = plain.match(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}/)?.[0] ?? null;
+  const namePart = plain
+    .split(/,|\bemail\s*:|\bphone\s*:/i)[0]
+    ?.replace(/\s+/g, ' ')
+    .trim();
+  return {
+    name: namePart || null,
+    email,
+    phone,
+    description: plain,
+  };
 }
 
-// =============================================================================
-// Core transform: WaGrant → WaOpportunity (input shape)
-// =============================================================================
+const AUDIENCE_MAP: Record<string, ApplicantType['value']> = {
+  businesses: 'organization',
+  individuals: 'individual',
+  'local government': 'government_municipal',
+  nonprofits: 'non_profit_with_501c3',
+  'state agencies': 'government_state',
+  tribes: 'government_tribal',
+};
 
-/**
- * Convert a raw CA grant record into a CommonGrants `Opportunity` with CA
- * custom fields attached. Pure function — no I/O, no DB, no Workers types,
- * **no validation**.
- *
- * Returns the **input** shape (strings everywhere, no `Date` objects) so the
- * result serializes directly to JSON; the CG date schemas accept string input
- * and normalize to `Date` internally. Validation against the extended schema
- * is performed by the plugin's `toCommon` wrapper (see `./plugin`).
- *
- * `syncedAt` is the ISO timestamp of the current ETL run, stored in the
- * `caLastSyncedAt` custom field.
- */
-export function waGrantToOpportunity(ca: WaGrant, syncedAt: string): WaOpportunityInput {
-  const status = normalizeStatus(ca.Status);
+function terms(grant: WaGrant): WaTerm[] {
+  return grant._embedded?.['wp:term']?.flat() ?? [];
+}
 
-  // Funding: parse the EstAmounts range + the EstAvailFunds total.
-  const { min: minAward, max: maxAward } = parseAmountRange(nullIfEmpty(ca.EstAmounts));
-  const totalAvailable = parseFinancial(nullIfEmpty(ca.EstAvailFunds));
-  const hasFunding = minAward !== null || maxAward !== null || totalAvailable !== null;
-
-  // Dates.
-  const openDateSplit = splitWaDateTime(nullIfEmpty(ca.OpenDate));
-  const closeDateSplit = splitWaDateTime(nullIfEmpty(ca.ApplicationDeadline));
-  const expAwardDate = nullIfEmpty(ca.ExpAwardDate);
-  const awardPeriod = nullIfEmpty(ca.AwardPeriod);
-
-  const otherDates: Record<string, OtherDateInput> = {};
-  if (expAwardDate) {
-    // ExpAwardDate is free-form ("November 2026") → an `other` event with details.
-    otherDates['expectedAwardDate'] = {
-      name: 'Expected Award Date',
-      eventType: 'other',
-      details: expAwardDate,
-    };
+export function taxonomies(grant: WaGrant): Record<string, string[]> {
+  const grouped: Record<string, string[]> = {};
+  for (const term of terms(grant)) {
+    (grouped[term.taxonomy] ??= []).push(decodeEntities(term.name));
   }
-  if (awardPeriod) {
-    // AwardPeriod is free-form ("Expires 3/31/29") → an `other` event.
-    otherDates['awardPeriod'] = {
-      name: 'Award Period',
-      eventType: 'other',
-      details: awardPeriod,
+  return grouped;
+}
+
+export function mapApplicantTypes(grant: WaGrant): ApplicantType[] {
+  const audiences = taxonomies(grant)['funding-audience'] ?? [];
+  return audiences.map((label) => {
+    const value = AUDIENCE_MAP[label.toLowerCase()];
+    return value
+      ? { value, customValue: null, description: null }
+      : { value: 'custom', customValue: label, description: null };
+  });
+}
+
+function putString(fields: Record<string, CustomField>, key: string, value: string | null): void {
+  if (value !== null) fields[key] = { name: key, fieldType: 'string', value };
+}
+
+function singleDate(name: string, date: string, time: string | null = null): OtherDate {
+  return { name, eventType: 'singleDate', date, time };
+}
+
+export function waGrantToOpportunity(grant: WaGrant, syncedAt: string): WaOpportunityInput {
+  const acf = grant.acf;
+  const status = normalizeStatus(acf.funding_status);
+  const taxonomyValues = taxonomies(grant);
+  const instrument = taxonomyValues['funding-type']?.join('; ') ?? null;
+  const total = parseFinancial(nullIfEmpty(acf.total_amount));
+  const min = parseFinancial(nullIfEmpty(acf.award_start));
+  const max = parseFinancial(nullIfEmpty(acf.ending_amount));
+  const estimatedCount = /^\d+$/.test(acf.number_of_awards.trim())
+    ? Number(acf.number_of_awards)
+    : null;
+
+  const postDate = waDate(acf.fund_published_date);
+  const closeDate = waDate(acf.application_close_date);
+  const otherDates: Record<string, OtherDate> = {};
+  const applicationOpen = waDate(acf.application_open_date ?? acf.open_date);
+  const expiry = waDate(acf.expiry_date);
+  const performanceStart = waDate(acf.period_of_performance_start);
+  const performanceEnd = waDate(acf.period_of_performance_end);
+  if (applicationOpen)
+    otherDates.applicationOpen = singleDate('Application opens', applicationOpen);
+  if (expiry) otherDates.expiry = singleDate('Opportunity expires', expiry);
+  if (performanceStart && performanceEnd) {
+    otherDates.periodOfPerformance = {
+      name: 'Period of performance',
+      eventType: 'dateRange',
+      startDate: performanceStart,
+      startTime: null,
+      endDate: performanceEnd,
+      endTime: null,
     };
+  } else if (performanceStart) {
+    otherDates.periodOfPerformanceStart = singleDate(
+      'Period of performance starts',
+      performanceStart,
+    );
+  } else if (performanceEnd) {
+    otherDates.periodOfPerformanceEnd = singleDate('Period of performance ends', performanceEnd);
   }
 
-  const hasKeyDates =
-    openDateSplit !== null || closeDateSplit !== null || Object.keys(otherDates).length > 0;
-
-  // Matching funds → the standard costSharing field (isRequired + percentage +
-  // details). CA's free-text MatchingFundsNotes folds into costSharing.details.
-  const matching = parseMatchingFunds(ca.MatchingFunds);
-  const matchingNotes = nullIfEmpty(ca.MatchingFundsNotes);
-
-  // Agency: CA exposes only a department name (no short code).
-  const agencyName = nullIfEmpty(ca.AgencyDept);
-  const agencyUrl = nullIfNotUrl(nullIfEmpty(ca.AgencyURL));
-
-  // Contact.
-  const contact = parseWaContact(ca.ContactInfo);
-
-  // Applicant eligibility → native `acceptedApplicantTypes`.
-  const acceptedApplicantTypes = mapApplicantTypes(nullIfEmpty(ca.ApplicantType));
-
-  // Description: prefer the long Description, fall back to the short Purpose.
-  const description =
-    stripHtml(nullIfEmpty(ca.Description)) ?? stripHtml(nullIfEmpty(ca.Purpose)) ?? '';
-
-  // ---- custom fields -----------------------------------------------------
-  const customFields: Record<string, CustomFieldInput> = {};
-  const putStr = (key: string, raw: string | null) => {
-    const v = nullIfEmpty(raw);
-    if (v !== null) customFields[key] = { name: key, fieldType: 'string', value: v };
-  };
-
-  // Always: the source key + sync timestamp.
-  customFields['caPortalId'] = { name: 'caPortalId', fieldType: 'string', value: ca.PortalID };
-
-  if (agencyName !== null) {
-    customFields['agency'] = {
+  const customFields: Record<string, CustomField> = {};
+  const sourceAgency = nullIfEmpty(acf.source);
+  if (sourceAgency) {
+    customFields.agency = {
       name: 'agency',
       fieldType: 'object',
-      value: { code: null, name: agencyName, parentName: null, parentCode: null },
+      value: { code: null, name: sourceAgency, parentName: null, parentCode: null },
     };
   }
-
-  if (contact !== null) {
-    customFields['contactInfo'] = { name: 'contactInfo', fieldType: 'object', value: contact };
+  const contact = parseWaContact(nullIfEmpty(acf.contact));
+  if (contact) {
+    customFields.contactInfo = { name: 'contactInfo', fieldType: 'object', value: contact };
   }
-
-  if (agencyUrl !== null) {
-    customFields['additionalInfo'] = {
+  const appLink = typeof acf.application_link === 'object' ? acf.application_link : null;
+  const appUrl = nullIfNotUrl(nullIfEmpty(appLink?.url));
+  if (appUrl) {
+    customFields.additionalInfo = {
       name: 'additionalInfo',
       fieldType: 'object',
-      value: { url: agencyUrl, description: 'Issuing agency homepage' },
+      value: { url: appUrl, description: nullIfEmpty(appLink?.title) ?? 'Application' },
     };
   }
-
-  if (matching !== null || matchingNotes !== null) {
-    customFields['costSharing'] = {
+  const costShare = nullIfEmpty(acf.cost_share);
+  if (costShare) {
+    putString(customFields, 'waCostShareRaw', costShare);
+    customFields.costSharing = {
       name: 'costSharing',
       fieldType: 'object',
       value: {
-        isRequired: matching?.isRequired ?? null,
-        percentage: matching?.percentage ?? null,
-        details: matchingNotes,
+        isRequired: /^yes$/i.test(costShare) ? true : /^no$/i.test(costShare) ? false : null,
+        percentage: null,
+        details: null,
       },
     };
   }
 
-  putStr('caGrantId', ca.GrantID);
-  putStr('fundingInstrument', ca.Type);
-
-  const categories = splitList(nullIfEmpty(ca.Categories));
-  if (categories.length > 0) {
-    customFields['caCategories'] = { name: 'caCategories', fieldType: 'array', value: categories };
+  putString(customFields, 'fundingSource', 'State');
+  putString(customFields, 'fundingInstrument', instrument);
+  putString(customFields, 'waWordPressId', String(grant.id));
+  putString(customFields, 'waSlug', grant.slug);
+  putString(customFields, 'waInternalReferenceId', nullIfEmpty(acf.internal_reference_id));
+  putString(customFields, 'waExternalReferenceId', nullIfEmpty(acf.external_reference_id));
+  customFields.waFeatured = {
+    name: 'waFeatured',
+    fieldType: 'boolean',
+    value: acf.featured_funding,
+  };
+  const preApplication = nullIfEmpty(acf.pre_application);
+  putString(customFields, 'waPreApplicationRaw', preApplication);
+  if (preApplication && /^(yes|no)$/i.test(preApplication)) {
+    customFields.waPreApplicationRequired = {
+      name: 'waPreApplicationRequired',
+      fieldType: 'boolean',
+      value: /^yes$/i.test(preApplication),
+    };
   }
-
-  const loi = nullIfEmpty(ca.LOI);
-  if (loi !== null && /^(yes|no)$/i.test(loi)) {
-    customFields['caLoi'] = { name: 'caLoi', fieldType: 'boolean', value: /^yes$/i.test(loi) };
+  if (appLink) {
+    putString(customFields, 'waApplicationLinkTitle', nullIfEmpty(appLink.title));
+    putString(customFields, 'waApplicationLinkUrl', nullIfEmpty(appLink.url));
+    putString(customFields, 'waApplicationLinkTarget', nullIfEmpty(appLink.target));
+  } else {
+    putString(
+      customFields,
+      'waApplicationLinkRaw',
+      typeof acf.application_link === 'string' ? nullIfEmpty(acf.application_link) : null,
+    );
   }
-
-  putStr('caApplicantTypeNotes', ca.ApplicantTypeNotes);
-  putStr('caGeography', ca.Geography);
-  putStr('fundingSource', ca.FundingSource);
-  putStr('caFundingSourceNotes', ca.FundingSourceNotes);
-  putStr('caFundingMethod', ca.FundingMethod);
-  putStr('caFundingMethodNotes', ca.FundingMethodNotes);
-  putStr('caEstAwards', ca.EstAwards);
-
-  // Preserve the raw range string so a partial/failed numeric parse loses nothing.
-  putStr('caEstAmountsRaw', ca.EstAmounts);
-  // Preserve EstAvailFunds text only when it couldn't be parsed numerically.
-  const rawAvail = nullIfEmpty(ca.EstAvailFunds);
-  if (rawAvail !== null && totalAvailable === null) putStr('caRawEstAvailFunds', rawAvail);
-
-  putStr('caAwardPeriod', ca.AwardPeriod);
-  putStr('caExpAwardDate', ca.ExpAwardDate);
-  putStr('caElecSubmission', ca.ElecSubmission);
-  putStr('caAwardStats', ca.AwardStats);
-  putStr('caCategorySuggestion', ca.CategorySuggestion);
-
-  // ChangeNotes is often the placeholder "N/A" — drop those.
-  const changeNotes = nullIfEmpty(ca.ChangeNotes);
-  if (changeNotes !== null && changeNotes.toUpperCase() !== 'N/A') {
-    putStr('caChangeNotes', changeNotes);
+  putString(customFields, 'waEligibilityHtml', nullIfEmpty(acf.eligibility));
+  putString(customFields, 'waRequirements', nullIfEmpty(acf.requirements));
+  putString(customFields, 'waContactHtml', nullIfEmpty(acf.contact));
+  putString(
+    customFields,
+    'waTechnicalAssistanceContact',
+    nullIfEmpty(acf.technical_assistance_contact),
+  );
+  putString(customFields, 'waResourcesHtml', nullIfEmpty(acf.resources));
+  if (Object.keys(taxonomyValues).length) {
+    customFields.waTaxonomies = {
+      name: 'waTaxonomies',
+      fieldType: 'object',
+      value: taxonomyValues,
+    };
   }
-
-  const subscribeUrl = nullIfNotUrl(nullIfEmpty(ca.AgencySubscribeURL));
-  if (subscribeUrl !== null) putStr('caSubscribeUrl', subscribeUrl);
-  const eventsUrl = nullIfNotUrl(nullIfEmpty(ca.GrantEventsURL));
-  if (eventsUrl !== null) putStr('caGrantEventsUrl', eventsUrl);
-
-  customFields['lastSyncedAt'] = {
+  customFields.waScore = { name: 'waScore', fieldType: 'number', value: acf.score };
+  putString(customFields, 'waScoreReason', nullIfEmpty(acf.score_reason));
+  putString(customFields, 'waNumberOfAwardsRaw', nullIfEmpty(acf.number_of_awards));
+  putString(customFields, 'waTotalAmountRaw', nullIfEmpty(acf.total_amount));
+  putString(customFields, 'waMinAwardAmountRaw', nullIfEmpty(acf.award_start));
+  putString(customFields, 'waMaxAwardAmountRaw', nullIfEmpty(acf.ending_amount));
+  putString(customFields, 'waDisbursementNotes', nullIfEmpty(acf.disbursement_notes));
+  putString(customFields, 'waApplicationCloseTime', nullIfEmpty(acf.application_close_time));
+  if (/<[^>]+>/.test(acf.description)) {
+    putString(customFields, 'waDescriptionHtml', nullIfEmpty(acf.description));
+  }
+  customFields.lastSyncedAt = {
     name: 'lastSyncedAt',
     fieldType: 'string',
     value: syncedAt,
   };
 
-  // Source URL: CA's GrantURL is usually absolute but occasionally free-form.
-  const source = nullIfNotUrl(nullIfEmpty(ca.GrantURL));
+  const fundingDetails = [nullIfEmpty(acf.disbursement_notes), nullIfEmpty(acf.number_of_awards)]
+    .filter(Boolean)
+    .join(' — ');
 
-  const lastModifiedAt = waDateToIso(ca.LastUpdated);
-
-  const opp: WaOpportunityInput = {
-    id: portalIdToCgId(ca.PortalID),
-    title: nullIfEmpty(ca.Title) ?? '',
-    description,
-    status: {
-      value: status.value,
-      customValue: status.customValue,
-      description: null,
-    },
-    source,
-    funding: hasFunding
-      ? {
-          details: null,
-          totalAmountAvailable: totalAvailable,
-          minAwardAmount: minAward,
-          maxAwardAmount: maxAward,
-          minAwardCount: null,
-          maxAwardCount: null,
-          estimatedAwardCount: null,
-        }
-      : null,
-    keyDates: hasKeyDates
-      ? {
-          postDate: openDateSplit
-            ? {
-                name: 'Open Date',
-                eventType: 'singleDate',
-                date: openDateSplit.date,
-                time: openDateSplit.time,
-              }
-            : null,
-          closeDate: closeDateSplit
-            ? {
-                name: 'Application Deadline',
-                eventType: 'singleDate',
-                date: closeDateSplit.date,
-                time: closeDateSplit.time,
-              }
-            : null,
-          otherDates: Object.keys(otherDates).length > 0 ? otherDates : null,
-        }
-      : null,
-    acceptedApplicantTypes: acceptedApplicantTypes.length > 0 ? acceptedApplicantTypes : null,
+  return {
+    id: portalIdToCgId(String(grant.id)),
+    title: stripHtml(grant.title.rendered) ?? grant.title.rendered,
+    description: stripHtml(nullIfEmpty(acf.description)) ?? '',
+    status: { ...status, description: null },
+    source: nullIfNotUrl(grant.link),
+    funding:
+      total || min || max || estimatedCount !== null || fundingDetails
+        ? {
+            details: fundingDetails || null,
+            totalAmountAvailable: total,
+            minAwardAmount: min,
+            maxAwardAmount: max,
+            minAwardCount: null,
+            maxAwardCount: null,
+            estimatedAwardCount: estimatedCount,
+          }
+        : null,
+    keyDates:
+      postDate || closeDate || Object.keys(otherDates).length
+        ? {
+            postDate: postDate ? singleDate('Published', postDate) : null,
+            closeDate: closeDate
+              ? singleDate(
+                  'Application closes',
+                  closeDate,
+                  normalizeTime(acf.application_close_time),
+                )
+              : null,
+            otherDates: Object.keys(otherDates).length ? otherDates : null,
+          }
+        : null,
+    acceptedApplicantTypes: mapApplicantTypes(grant),
     customFields,
-    createdAt: lastModifiedAt,
-    lastModifiedAt,
+    createdAt: gmtDateTime(grant.date_gmt),
+    lastModifiedAt: gmtDateTime(grant.modified_gmt),
   };
-
-  return opp;
 }
 
-// =============================================================================
-// Reverse transform: WaOpportunity → WaGrant (best-effort)
-// =============================================================================
+function normalizeTime(value: string | null | undefined): string | null {
+  const raw = nullIfEmpty(value);
+  if (!raw) return null;
+  const match = raw.match(/^(\d{1,2}):(\d{2})/);
+  return match ? `${match[1]?.padStart(2, '0')}:${match[2]}:00` : null;
+}
 
-/** Read a custom-field value off a CG opportunity, or `undefined` if absent. */
 function cfValue(opp: WaOpportunityInput, key: string): unknown {
   return opp.customFields?.[key]?.value;
 }
 
-/** Coerce a custom-field value to a non-empty string, else `""` (CA's empty shape). */
 function cfString(opp: WaOpportunityInput, key: string): string {
-  const v = cfValue(opp, key);
-  return typeof v === 'string' ? v : '';
-}
-
-/** Join a custom-field string array back into CA's `;`-delimited form. */
-function cfList(opp: WaOpportunityInput, key: string): string {
-  const v = cfValue(opp, key);
-  return Array.isArray(v) ? v.filter((x) => typeof x === 'string').join('; ') : '';
+  const value = cfValue(opp, key);
+  return typeof value === 'string' ? value : '';
 }
 
 /**
- * Reverse of `waGrantToOpportunity`: reconstruct a raw `WaGrant` from a CG
- * opportunity. Pure, no validation.
- *
- * **Best-effort and lossy by design.** Fields with no CommonGrants home are
- * preserved in `ca*` custom fields and round-trip faithfully; values folded
- * into shared fields are reconstructed canonically and may lose original
- * phrasing:
- *
- *   - `Purpose` (folded into `description` behind `Description`) → `""`
- *   - `Description` loses original HTML (only the stripped text survives)
- *   - a mapped `status` loses its original casing (canonical label returned)
- *   - `EstAmounts` is reconstructed from the preserved raw string, not the
- *     parsed numeric range
- *
- * These drops are asserted in the adapter test suite so the round-trip
- * contract stays explicit.
+ * Best-effort reverse mapping required by the SDK plugin contract. FundHubWA
+ * is read-only, so this exists for validation and round-trip diagnostics, not
+ * for writes to WordPress.
  */
 export function waOpportunityToGrant(opp: WaOpportunityInput): WaGrant {
-  const keyDates = opp.keyDates ?? null;
-
+  const sourceId = Number(cfString(opp, 'waWordPressId')) || 0;
+  const status =
+    opp.status.value === 'open'
+      ? 'active'
+      : opp.status.customValue === 'expired'
+        ? 'expired'
+        : opp.status.value;
   const agency = cfValue(opp, 'agency') as { name?: unknown } | undefined;
-  const additionalInfo = cfValue(opp, 'additionalInfo') as { url?: unknown } | undefined;
-  const contact = cfValue(opp, 'contactInfo') as
-    | { name?: unknown; email?: unknown; phone?: unknown; description?: unknown }
+  const additional = cfValue(opp, 'additionalInfo') as
+    | { url?: unknown; description?: unknown }
     | undefined;
-  const costSharing = cfValue(opp, 'costSharing') as
-    | { isRequired?: unknown; percentage?: unknown; details?: unknown }
-    | undefined;
-  const loi = cfValue(opp, 'caLoi');
-
-  // Reassemble CA's structured ContactInfo string from the parsed contact.
-  const contactInfo =
-    contact != null
-      ? [
-          typeof contact.name === 'string' && contact.name ? `name: ${contact.name}` : null,
-          typeof contact.email === 'string' && contact.email ? `email: ${contact.email}` : null,
-          typeof contact.phone === 'string' && contact.phone ? `tel: ${contact.phone}` : null,
-        ]
-          .filter((p): p is string => p !== null)
-          .map((p) => `${p};`)
-          .join(' ')
-      : '';
-
-  const matchingFunds =
-    typeof costSharing?.percentage === 'number'
-      ? percentToWaPercent(costSharing.percentage)
-      : costSharing?.isRequired === false
-        ? 'Not Required'
-        : '';
+  const tax = cfValue(opp, 'waTaxonomies');
+  const taxonomies = tax && typeof tax === 'object' ? (tax as Record<string, string[]>) : {};
 
   return {
-    PortalID: cfString(opp, 'caPortalId'),
-    GrantID: cfString(opp, 'caGrantId'),
-    Status: statusToWaString(opp.status),
-    LastUpdated: isoToWaDate(opp.lastModifiedAt),
-    ChangeNotes: cfString(opp, 'caChangeNotes'),
-    AgencyDept: typeof agency?.name === 'string' ? agency.name : '',
-    Title: opp.title,
-    Type: cfString(opp, 'fundingInstrument'),
-    LOI: typeof loi === 'boolean' ? (loi ? 'Yes' : 'No') : '',
-    Categories: cfList(opp, 'caCategories'),
-    CategorySuggestion: cfString(opp, 'caCategorySuggestion'),
-    Purpose: '',
-    Description: opp.description,
-    ApplicantType: applicantTypesToWaString(opp.acceptedApplicantTypes),
-    ApplicantTypeNotes: cfString(opp, 'caApplicantTypeNotes'),
-    Geography: cfString(opp, 'caGeography'),
-    FundingSource: cfString(opp, 'fundingSource'),
-    FundingSourceNotes: cfString(opp, 'caFundingSourceNotes'),
-    MatchingFunds: matchingFunds,
-    MatchingFundsNotes: typeof costSharing?.details === 'string' ? costSharing.details : '',
-    EstAvailFunds:
-      moneyToWaString(opp.funding?.totalAmountAvailable) ?? cfString(opp, 'caRawEstAvailFunds'),
-    EstAwards: cfString(opp, 'caEstAwards'),
-    EstAmounts: cfString(opp, 'caEstAmountsRaw'),
-    FundingMethod: cfString(opp, 'caFundingMethod'),
-    FundingMethodNotes: cfString(opp, 'caFundingMethodNotes'),
-    OpenDate: eventToWaDate(keyDates?.postDate),
-    ApplicationDeadline: eventToWaDate(keyDates?.closeDate),
-    AwardPeriod: cfString(opp, 'caAwardPeriod'),
-    ExpAwardDate: cfString(opp, 'caExpAwardDate'),
-    ElecSubmission: cfString(opp, 'caElecSubmission'),
-    GrantURL: isoSource(opp.source) ?? '',
-    AgencyURL: typeof additionalInfo?.url === 'string' ? additionalInfo.url : '',
-    AgencySubscribeURL: cfString(opp, 'caSubscribeUrl'),
-    GrantEventsURL: cfString(opp, 'caGrantEventsUrl'),
-    ContactInfo: contactInfo,
-    AwardStats: cfString(opp, 'caAwardStats'),
+    id: sourceId,
+    date_gmt: isoWithoutZone(opp.createdAt),
+    modified_gmt: isoWithoutZone(opp.lastModifiedAt),
+    slug: cfString(opp, 'waSlug'),
+    link: opp.source ?? '',
+    title: { rendered: opp.title },
+    acf: {
+      funding_status: status,
+      featured_funding: cfValue(opp, 'waFeatured') === true,
+      internal_reference_id: cfString(opp, 'waInternalReferenceId'),
+      external_reference_id: cfString(opp, 'waExternalReferenceId'),
+      application_open_date: null,
+      application_close_date: null,
+      application_close_time: cfString(opp, 'waApplicationCloseTime'),
+      expiry_date: null,
+      period_of_performance_start: null,
+      period_of_performance_end: null,
+      fund_published_date: null,
+      open_date: null,
+      federal_or_state: 'state',
+      source: typeof agency?.name === 'string' ? agency.name : '',
+      total_amount: cfString(opp, 'waTotalAmountRaw'),
+      number_of_awards: cfString(opp, 'waNumberOfAwardsRaw'),
+      award_start: cfString(opp, 'waMinAwardAmountRaw'),
+      ending_amount: cfString(opp, 'waMaxAwardAmountRaw'),
+      disbursement_notes: cfString(opp, 'waDisbursementNotes'),
+      cost_share: cfString(opp, 'waCostShareRaw'),
+      description: cfString(opp, 'waDescriptionHtml') || opp.description,
+      pre_application:
+        cfString(opp, 'waPreApplicationRaw') ||
+        (cfValue(opp, 'waPreApplicationRequired') === true ? 'yes' : 'no'),
+      eligibility: cfString(opp, 'waEligibilityHtml'),
+      requirements: cfString(opp, 'waRequirements'),
+      application_link: cfString(opp, 'waApplicationLinkRaw')
+        ? cfString(opp, 'waApplicationLinkRaw')
+        : typeof additional?.url === 'string' || cfString(opp, 'waApplicationLinkUrl')
+          ? {
+              url:
+                cfString(opp, 'waApplicationLinkUrl') ||
+                (typeof additional?.url === 'string' ? additional.url : ''),
+              title:
+                cfString(opp, 'waApplicationLinkTitle') ||
+                (typeof additional?.description === 'string'
+                  ? additional.description
+                  : 'Application'),
+              target: cfString(opp, 'waApplicationLinkTarget'),
+            }
+          : '',
+      contact: cfString(opp, 'waContactHtml'),
+      technical_assistance_contact: cfString(opp, 'waTechnicalAssistanceContact'),
+      resources: cfString(opp, 'waResourcesHtml'),
+      score: typeof cfValue(opp, 'waScore') === 'number' ? (cfValue(opp, 'waScore') as number) : 0,
+      score_reason: cfString(opp, 'waScoreReason'),
+    },
+    _embedded: {
+      'wp:term': Object.entries(taxonomies).map(([taxonomy, names]) =>
+        names.map((name, index) => ({
+          id: index,
+          name,
+          slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+          taxonomy,
+        })),
+      ),
+    },
   };
 }
 
-/** Convert a CG `Money` value back to CA's plain dollar string, or null. */
-function moneyToWaString(m: { amount?: unknown } | null | undefined): string | null {
-  if (!m || typeof m.amount !== 'string') return null;
-  const n = Number(m.amount);
-  if (!Number.isFinite(n)) return null;
-  return Number.isInteger(n) ? `$${n.toLocaleString('en-US')}` : `$${m.amount}`;
+function isoWithoutZone(value: unknown): string {
+  if (value instanceof Date) return value.toISOString().replace(/Z$/, '');
+  return String(value ?? '').replace(/Z$/, '');
 }
 
-/** A CG single-date event → CA's `"YYYY-MM-DD HH:MM:SS"` string (or `""`). */
-function eventToWaDate(event: unknown): string {
-  if (!event || typeof event !== 'object') return '';
-  const e = event as { eventType?: unknown; date?: unknown; time?: unknown };
-  if (e.eventType !== 'singleDate') return '';
-  const date = e.date instanceof Date ? e.date.toISOString().slice(0, 10) : e.date;
-  if (typeof date !== 'string') return '';
-  return typeof e.time === 'string' && e.time ? `${date} ${e.time}` : date;
-}
-
-/** Convert a CG ISO datetime back to CA's space-separated `"YYYY-MM-DD HH:MM:SS"`. */
-function isoToWaDate(v: unknown): string {
-  const s = typeof v === 'string' ? v : v instanceof Date ? v.toISOString() : '';
-  if (!s) return '';
-  const m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
-  return m ? `${m[1]} ${m[2]}` : s;
-}
-
-/** Coerce `source` (string | Date | null) to a string URL or null. */
-function isoSource(v: unknown): string | null {
-  return typeof v === 'string' ? v : null;
-}
-
-// =============================================================================
-// Search-text helper — used by the SQL tier for FTS indexing
-// =============================================================================
-
-/** Concatenate searchable text fields into a single string for FTS indexing. */
-export function buildSearchText(ca: WaGrant): string {
-  const parts: string[] = [
-    ca.Title,
-    stripHtml(ca.Description) ?? '',
-    stripHtml(ca.Purpose) ?? '',
-    ca.AgencyDept,
-    ca.Categories,
-    ca.Type,
-    ca.FundingSource,
-  ];
-  return parts
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0)
-    .join(' ')
-    .replace(/\s+/g, ' ');
+export function buildSearchText(grant: WaGrant): string {
+  const acf = grant.acf;
+  return [
+    stripHtml(grant.title.rendered),
+    stripHtml(acf.description),
+    stripHtml(acf.eligibility),
+    acf.requirements,
+    acf.source,
+    ...Object.values(taxonomies(grant)).flat(),
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
