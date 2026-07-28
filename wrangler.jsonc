@@ -34,10 +34,6 @@
   "vars": {
     // FundHub's WordPress REST API base + the resource (post type) the client
     // reads from — https://fundhub.wa.gov/wp-json/wp/v2/funding?per_page=100
-    //
-    // TODO(adapter): `WaSourceClient` still builds CKAN `datastore_search`
-    // requests against these two values. Reshape them as needed when the
-    // adapter is ported to the WP REST API.
     "WA_API_BASE_URL": "https://fundhub.wa.gov/wp-json/wp/v2",
     "WA_RESOURCE_ID": "funding",
     "ENVIRONMENT": "production",

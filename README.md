@@ -11,6 +11,8 @@ This project is both a **proof of concept** that demonstrates how a state grants
 > into CommonGrants. Federal records in FundHub are intentionally excluded to
 > avoid duplicating the federal CommonGrants source.
 
+**Live API:** [wa-commongrants-api.brian-derfer.workers.dev](https://wa-commongrants-api.brian-derfer.workers.dev) · [API documentation](https://wa-commongrants-api.brian-derfer.workers.dev/docs)
+
 ## Overview
 
 The API fetches funding opportunity data from [Washington FundHub](https://fundhub.wa.gov/), normalizes it into the CommonGrants `Opportunity` schema (plus WA-specific custom fields), and serves it via standard CommonGrants endpoints.
@@ -111,6 +113,14 @@ The source-specific implementation is concentrated in `src/adapter/`:
 After deploying a transformation change, run the **Manual sync** GitHub Action
 with **Force full re-sync** enabled. This bypasses the content hash and
 watermark so cached rows are rebuilt with the current mapping.
+
+Repository deployment requires these GitHub Actions settings:
+
+- Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and `SYNC_SECRET`
+- Variable: `PRODUCTION_BASE_URL=https://wa-commongrants-api.brian-derfer.workers.dev`
+
+Pull requests receive an isolated Worker and D1 database. Closing a pull
+request deletes both preview resources.
 
 ## Forking for a different source system
 
