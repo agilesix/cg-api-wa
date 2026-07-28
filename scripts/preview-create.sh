@@ -91,7 +91,10 @@ echo "  ✓ Deployed: ${PREVIEW_URL:-unknown}"
 
 if [ -n "${SYNC_SECRET:-}" ]; then
   echo "→ Setting SYNC_SECRET on ${WORKER_NAME}"
-  printf '%s' "${SYNC_SECRET}" | ${WRANGLER} secret put SYNC_SECRET --name "${WORKER_NAME}" --env preview
+  # `--name` already identifies the deployed preview Worker. Combining it
+  # with `--env preview` makes Wrangler target `${WORKER_NAME}-preview`
+  # instead, leaving the actual preview without the secret.
+  printf '%s' "${SYNC_SECRET}" | ${WRANGLER} secret put SYNC_SECRET --name "${WORKER_NAME}"
   echo "  ✓ SYNC_SECRET set"
 else
   echo "  ! SYNC_SECRET not provided — /admin/sync will reject calls on this preview"
