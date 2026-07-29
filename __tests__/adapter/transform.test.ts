@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSearchText,
   mapApplicantTypes,
+  nullIfNotUrl,
   parseFinancial,
   portalIdToCgId,
   stripHtml,
@@ -29,6 +30,9 @@ describe('FundHubWA transform', () => {
     expect(opportunity.keyDates?.closeDate).toMatchObject({
       date: '2026-09-30',
       time: '15:00:00',
+    });
+    expect(opportunity.customFields?.additionalInfo?.value).toMatchObject({
+      url: 'https://example.wa.gov/apply',
     });
   });
 
@@ -66,6 +70,20 @@ describe('FundHubWA transform', () => {
     expect(back.acf.eligibility).toBe(waFixture.acf.eligibility);
   });
 
+  it('rejects malformed application URLs without losing the source page', () => {
+    const malformed = structuredClone(waFixture);
+    malformed.acf.application_link = {
+      title: 'Apply Now',
+      url: 'http://_blank',
+      target: '_blank',
+    };
+
+    const mapped = waGrantToOpportunity(malformed, SYNCED_AT);
+
+    expect(mapped.source).toBe(waFixture.link);
+    expect(mapped.customFields?.additionalInfo).toBeUndefined();
+  });
+
   it('builds useful source search text', () => {
     const text = buildSearchText(waFixture);
     expect(text).toContain('affordable housing');
@@ -80,6 +98,19 @@ describe('normalization helpers', () => {
     expect(waDate('September 30')).toBeNull();
     expect(parseFinancial('31,000,000')?.amount).toBe('31000000.00');
     expect(parseFinancial('Varies')).toBeNull();
+    expect(nullIfNotUrl('https://fundhub.wa.gov/funding/example/')).toBe(
+      'https://fundhub.wa.gov/funding/example/',
+    );
+    for (const malformed of [
+      'http://_blank',
+      'http://-',
+      'http://.',
+      'http://a..b',
+      'http://-example.com',
+      'http://example-.com',
+    ]) {
+      expect(nullIfNotUrl(malformed)).toBeNull();
+    }
   });
 
   it('turns HTML into readable text', () => {

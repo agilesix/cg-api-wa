@@ -22,7 +22,11 @@ export function nullIfNotUrl(value: string | null): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? value : null;
+    const isHttp = url.protocol === 'http:' || url.protocol === 'https:';
+    const hasValidHostname = url.hostname
+      .split('.')
+      .every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+    return isHttp && hasValidHostname ? value : null;
   } catch {
     return null;
   }
