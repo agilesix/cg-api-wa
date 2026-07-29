@@ -91,11 +91,16 @@ echo 'SYNC_SECRET=local-dev-secret' > .dev.vars
 Then trigger a sync:
 
 ```bash
-curl -X POST http://localhost:8787/common-grants/admin/sync \
+curl -X POST http://localhost:8787/admin/sync \
   -H 'Authorization: Bearer local-dev-secret'
 ```
 
-This fetches opportunities from Washington FundHub, transforms them into CommonGrants format, and upserts them into local D1. (Until `src/adapter/` is ported — see the port-status note in the README — the client still issues CKAN requests and this call will fail against FundHub.) Syncs are incremental: the first run is a full load, and later runs fetch only records modified since the stored watermark (a `?force=true` query param forces a full re-sync).
+This fetches Washington-state opportunities from FundHub's WordPress REST API,
+transforms them into CommonGrants format, and upserts them into local D1.
+Federal and unclassified FundHub records are excluded. Syncs are incremental:
+the first run is a full load, and later runs fetch only records modified since
+the stored watermark. Add `?force=true` to rebuild every cached row after a
+transformation change.
 
 ## Tests
 
