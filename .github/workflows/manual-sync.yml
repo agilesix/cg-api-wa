@@ -5,7 +5,8 @@ name: Manual sync
 #
 # Setup (once per repo):
 #   - Repository secret  SYNC_SECRET           (already set for production)
-#   - Repository variable PRODUCTION_BASE_URL  e.g. https://wa-commongrants-api.<subdomain>.workers.dev
+#   - Repository variable PRODUCTION_BASE_URL  e.g. https://wa.api.cg.a6lab.ai
+#   - Repository variable PREVIEW_WORKERS_HOST_SUFFIX  e.g. <subdomain>.workers.dev
 #     (Settings → Secrets and variables → Actions → Variables)
 #
 # By default this runs a normal incremental sync (same as the Cron). Check the
@@ -20,7 +21,7 @@ on:
         type: boolean
         default: false
       base_url:
-        description: 'Preview URL override. Must be this repository’s per-PR Worker under the same workers.dev account as PRODUCTION_BASE_URL.'
+        description: 'Preview URL override. Must be this repository’s per-PR Worker under PREVIEW_WORKERS_HOST_SUFFIX.'
         type: string
         required: false
 
@@ -54,27 +55,29 @@ jobs:
           # A workflow dispatcher with repository write access must not be able
           # to send SYNC_SECRET to an arbitrary host. Production is always
           # trusted; a preview override must use this repository's exact
-          # per-PR Worker naming convention and the same workers.dev account
-          # suffix as PRODUCTION_BASE_URL.
+          # per-PR Worker naming convention and the explicitly configured
+          # workers.dev account suffix.
           production_url="${{ vars.PRODUCTION_BASE_URL }}"
+          preview_workers_host_suffix="${{ vars.PREVIEW_WORKERS_HOST_SUFFIX }}"
           if [ -z "${production_url:-}" ]; then
             echo "::error::PRODUCTION_BASE_URL repository variable is not set."
             exit 1
           fi
-          node - "${production_url}" "${BASE_URL}" <<'NODE'
-          const [productionRaw, candidateRaw] = process.argv.slice(2);
+          node - "${production_url}" "${preview_workers_host_suffix}" "${BASE_URL}" <<'NODE'
+          const [productionRaw, previewSuffixRaw, candidateRaw] = process.argv.slice(2);
           const production = new URL(productionRaw);
           const candidate = new URL(candidateRaw);
-          const productionHostParts = production.hostname.split(".");
-          const trustedSuffix = productionHostParts.slice(1).join(".");
+          const trustedSuffix = previewSuffixRaw.trim().replace(/^\./, "").toLowerCase();
+          const escapedSuffix = trustedSuffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
           const previewHost = new RegExp(
-            `^wa-commongrants-api-pr-\\d+\\.${trustedSuffix.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}$`,
+            `^wa-commongrants-api-pr-\\d+\\.${escapedSuffix}$`,
           );
           const isProduction = candidate.origin === production.origin;
           const isPreview =
+            trustedSuffix.length > 0 &&
             candidate.protocol === "https:" &&
             candidate.port === "" &&
-            previewHost.test(candidate.hostname);
+            previewHost.test(candidate.hostname.toLowerCase());
           if (!isProduction && !isPreview) {
             console.error(`::error::Refusing to send SYNC_SECRET to untrusted URL: ${candidate.origin}`);
             process.exit(1);

@@ -11,7 +11,7 @@ This project is both a **proof of concept** that demonstrates how a state grants
 > into CommonGrants. Federal records in FundHub are intentionally excluded to
 > avoid duplicating the federal CommonGrants source.
 
-**Live API:** [wa-commongrants-api.brian-derfer.workers.dev](https://wa-commongrants-api.brian-derfer.workers.dev) · [API documentation](https://wa-commongrants-api.brian-derfer.workers.dev/docs)
+**Live API:** [wa.api.cg.a6lab.ai](https://wa.api.cg.a6lab.ai) · [API documentation](https://wa.api.cg.a6lab.ai/docs)
 
 ## Overview
 
@@ -117,7 +117,14 @@ watermark so cached rows are rebuilt with the current mapping.
 Repository deployment requires these GitHub Actions settings:
 
 - Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and `SYNC_SECRET`
-- Variable: `PRODUCTION_BASE_URL=https://wa-commongrants-api.brian-derfer.workers.dev`
+- Variables:
+  - `PRODUCTION_BASE_URL=https://wa.api.cg.a6lab.ai`
+  - `PREVIEW_WORKERS_HOST_SUFFIX=brian-derfer.workers.dev`
+
+`PRODUCTION_BASE_URL` is the canonical public endpoint used by the default
+manual sync. Preview overrides continue to use per-PR `workers.dev` URLs; the
+separate suffix variable lets the workflow validate those hosts without
+deriving their trust boundary from the custom production domain.
 
 Pull requests receive an isolated Worker and D1 database. Closing a pull
 request deletes both preview resources.
